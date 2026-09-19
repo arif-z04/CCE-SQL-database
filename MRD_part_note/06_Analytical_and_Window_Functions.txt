@@ -1,0 +1,151 @@
+================================================================================
+CLASSROOM STUDY NOTE: ANALYTICAL & WINDOW FUNCTIONS
+Source Material: MRD_part/ (Analytical-Window Functions.txt)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/06_Analytical_and_Window_Functions.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. MOTIVATION & OVERVIEW
+--------------------------------------------------------------------------------
+In standard SQL, `GROUP BY` collapses multiple rows into a single aggregated row. 
+Analytical (or Window) Functions compute rankings and running values across a group 
+of rows without collapsing them, returning a result for EVERY individual row.
+
+In Murad Sir's live Oracle 23ai (`Oracle AI Database 26ai Free Release 23.26.2.0.0`) 
+lab session, students explore four primary analytical functions:
+1. `ROW_NUMBER()`
+2. `RANK()`
+3. `LAG()`
+4. `DENSE_RANK()` with `PARTITION BY`
+
+
+--------------------------------------------------------------------------------
+2. CLASSROOM LAB SETUP (EMPLOYEES1 TABLE)
+--------------------------------------------------------------------------------
+    CREATE TABLE Employees1 (
+        ID         NUMBER(5) PRIMARY KEY,
+        NAME       VARCHAR2(50) NOT NULL,
+        DEPARTMENT VARCHAR2(30),
+        SALARY     NUMBER(10, 2)
+    );
+
+    INSERT INTO Employees1 VALUES (101, 'Rahim Islam',     'IT',      50000);
+    INSERT INTO Employees1 VALUES (102, 'Karim Hassan',    'IT',      50000); -- Tie with Rahim
+    INSERT INTO Employees1 VALUES (103, 'Nusrat Jahan',    'HR',      45000);
+    INSERT INTO Employees1 VALUES (104, 'Tanvir Hossain',  'HR',      40000);
+    INSERT INTO Employees1 VALUES (105, 'Ayesha Siddiqua', 'Finance', 60000);
+    COMMIT;
+
+
+--------------------------------------------------------------------------------
+3. CLASSROOM QUERIES & OUTPUT ANALYSIS
+--------------------------------------------------------------------------------
+
+A. Query 1: ROW_NUMBER() OVER (ORDER BY Salary DESC)
+Assigns a strictly sequential, unique integer to each row ordered by salary descending.
+
+    SELECT ID, Name, Salary,
+           ROW_NUMBER() OVER (ORDER BY Salary DESC) AS Row_Num
+      FROM Employees1;
+
+Actual Terminal Output:
+    ID  | NAME            | SALARY | ROW_NUM
+    ----+-----------------+--------+--------
+    105 | Ayesha Siddiqua |  60000 |       1
+    101 | Rahim Islam     |  50000 |       2
+    102 | Karim Hassan    |  50000 |       3  <-- Tied salary, but distinct row number!
+    103 | Nusrat Jahan    |  45000 |       4
+    104 | Tanvir Hossain  |  40000 |       5
+
+B. Query 2: RANK() OVER (ORDER BY Salary DESC)
+Assigns the same rank to identical values (ties), but skips subsequent rank positions.
+
+    SELECT ID, Name, Salary,
+           RANK() OVER (ORDER BY Salary DESC) AS Salary_Rank
+      FROM Employees1;
+
+Actual Terminal Output:
+    ID  | NAME            | SALARY | SALARY_RANK
+    ----+-----------------+--------+------------
+    105 | Ayesha Siddiqua |  60000 |           1
+    101 | Rahim Islam     |  50000 |           2  <-- Tie
+    102 | Karim Hassan    |  50000 |           2  <-- Tie
+    103 | Nusrat Jahan    |  45000 |           4  <-- Skips rank 3!
+    104 | Tanvir Hossain  |  40000 |           5
+
+Classroom Takeaway:
+Notice that because Rahim and Karim tie for rank 2, rank 3 is SKIPPED and Nusrat receives 4.
+
+C. Query 3: LAG(Salary, 1) OVER (ORDER BY Salary DESC)
+Fetches the value of a column from the PRECEDING row in the sorted result set.
+
+    SELECT Name, Salary,
+           LAG(Salary, 1) OVER (ORDER BY Salary DESC) AS Previous_Salary
+      FROM Employees1;
+
+Actual Terminal Output:
+    NAME            | SALARY | PREVIOUS_SALARY
+    ----------------+--------+----------------
+    Ayesha Siddiqua |  60000 | NULL
+    Rahim Islam     |  50000 | 60000
+    Karim Hassan    |  50000 | 50000
+    Nusrat Jahan    |  45000 | 50000
+    Tanvir Hossain  |  40000 | 45000
+
+Classroom Takeaway:
+- The first row (Ayesha) has no preceding row, so `PREVIOUS_SALARY` is NULL.
+- Each subsequent employee sees the salary of the person ranked immediately above them.
+
+D. Query 4: DENSE_RANK() with PARTITION BY
+Computes ranks within each department independently. Does NOT skip numbers after ties!
+
+    -- ডিপার্টমেন্ট অনুসারে আলাদা র্যাঙ্কিং
+    SELECT ID, Name, Department, Salary,
+           DENSE_RANK() OVER (PARTITION BY Department ORDER BY Salary DESC) AS Dept_Rank
+      FROM Employees1;
+
+Actual Terminal Output:
+    ID  | NAME            | DEPARTMENT | SALARY | DEPT_RANK
+    ----+-----------------+------------+--------+----------
+    105 | Ayesha Siddiqua | Finance    |  60000 |         1
+    103 | Nusrat Jahan    | HR         |  45000 |         1
+    104 | Tanvir Hossain  | HR         |  40000 |         2
+    101 | Rahim Islam     | IT         |  50000 |         1  <-- Tie
+    102 | Karim Hassan    | IT         |  50000 |         1  <-- Tie (Both rank 1)
+
+
+--------------------------------------------------------------------------------
+4. REAL CLASSROOM TROUBLESHOOTING & ERRORS
+--------------------------------------------------------------------------------
+Murad Sir's transcript includes real debugging scenarios encountered in SQL*Plus:
+
+1. ORA-00955: Name is already used by an existing object
+   - Cause: Attempting `CREATE TABLE Employees` when an `Employees` table from a 
+     prior session already existed in the schema.
+   - Solution: Using `DESCRIBE` to inspect existing table columns or renaming 
+     the new table to `Employees1`.
+
+2. ORA-00904: "NAME": Invalid identifier
+   - Cause: Column names were named `EMP_NAME` in one table version and `NAME` in 
+     another.
+   - Solution: Running `DESCRIBE Employees1` to verify exact column nomenclature.
+
+3. SP2-0734: Unknown command beginning "FROM Emplo..."
+   - Cause: Pressing Enter with incomplete multi-line text in the SQL*Plus terminal.
+   - Solution: Clearing SQL buffer or re-typing the complete SELECT statement.
+
+
+--------------------------------------------------------------------------------
+5. QUICK FUNCTION REFERENCE CHEAT SHEET
+--------------------------------------------------------------------------------
++--------------------+---------------------------------------------------------+
+| Function           | Behavioral Rule                                         |
++--------------------+---------------------------------------------------------+
+| ROW_NUMBER()       | Sequential (1, 2, 3, 4, 5); never ties, never skips.    |
+| RANK()             | Handles ties by sharing rank, SKIPS subsequent numbers. |
+| DENSE_RANK()       | Handles ties by sharing rank, DOES NOT skip numbers.    |
+| LAG(col, n)        | Returns column value from n rows prior.                 |
+| PARTITION BY       | Divides rows into independent groups for ranking.       |
++--------------------+---------------------------------------------------------+
+================================================================================

@@ -1,0 +1,96 @@
+================================================================================
+CLASSROOM STUDY NOTE: DATABASE TRIGGERS (OVERVIEW & LIFECYCLE)
+Source Material: MRD_part/ (Trigger part1, part2, part3, part4)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/03_Database_Triggers_Overview.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+A Database Trigger is a stored PL/SQL block that executes ("fires") automatically 
+whenever a specific Data Manipulation Language (DML) event (INSERT, UPDATE, or DELETE) 
+occurs on an associated table.
+
+In Murad Sir's lectures:
+- Unlike procedures or functions, a trigger CANNOT be explicitly called or invoked 
+  by a user or application.
+- The database engine automatically monitors table operations and executes the 
+  trigger behind the scenes.
+
+
+--------------------------------------------------------------------------------
+2. TRIGGER ANATOMY & CORE DIMENSIONS
+--------------------------------------------------------------------------------
+Every DML trigger taught in the curriculum has three fundamental dimensions:
+
+1. Trigger Timing:
+   - BEFORE : Executes before the actual database change occurs (used for data 
+              sanitization, validation, and overriding incoming values).
+   - AFTER  : Executes after the database change has been applied (used for auditing, 
+              logging, and cascade actions).
+
+2. Trigger Event:
+   - INSERT : Fires when new records are added.
+   - UPDATE [OF column] : Fires when existing rows (or specific columns) are modified.
+   - DELETE : Fires when records are removed.
+
+3. Trigger Granularity:
+   - FOR EACH ROW : A row-level trigger that executes once for EVERY individual row 
+     affected by the SQL statement. Provides access to `:NEW` and `:OLD` pseudo-records.
+
+
+--------------------------------------------------------------------------------
+3. PSEUDO-RECORDS: :NEW AND :OLD
+--------------------------------------------------------------------------------
+Row-level triggers maintain two special pseudo-records:
+- `:NEW` : Represents the new data being brought into the row.
+- `:OLD` : Represents the existing persisted data before the row was touched.
+
+Behavior Matrix:
++-------------------+----------------------------+-----------------------------+
+| Operation         | :OLD Pseudo-Record         | :NEW Pseudo-Record          |
++-------------------+----------------------------+-----------------------------+
+| INSERT            | NULL (no prior data)       | Contains new column values  |
+| UPDATE            | Contains data before update| Contains new proposed values|
+| DELETE            | Contains data being deleted| NULL (row ceases to exist)  |
++-------------------+----------------------------+-----------------------------+
+
+
+--------------------------------------------------------------------------------
+4. PROGRESSION OF CLASSROOM EXAMPLES
+--------------------------------------------------------------------------------
+
+Part 1: Simple Audit Trigger (AFTER INSERT on Student)
+  - Tables: `student (student_id, name, age)` and `student_log (student_id, name, log_date)`.
+  - Trigger: Automatically records newly enrolled students into `student_log` 
+    with `SYSDATE`.
+
+Part 2: Salary Audit Trigger (AFTER UPDATE OF salary on Employee)
+  - Tables: `employee (emp_id, name, salary)` and `salary_log (emp_id, old_salary, new_salary, change_date)`.
+  - Demonstrates `:OLD.salary` and `:NEW.salary` tracking simultaneous changes.
+  - Multi-row insert syntax: `INSERT ALL INTO employee VALUES ... SELECT * FROM dual;`.
+
+Part 3: Pre-Deletion Archival Trigger (BEFORE DELETE on Employee)
+  - Captures `:OLD.emp_id` and `:OLD.salary` into `salary_log` before the record 
+    is purged from the main table.
+
+Part 4: Behavioral Control with BEFORE Triggers
+  - In-flight data correction: If `:NEW.salary < 20000`, override to `20000`.
+  - Negative salary protection: If `:NEW.salary < 0`, override to `0`.
+  - User warning: Alerting via `DBMS_OUTPUT.PUT_LINE` before row deletion.
+
+
+--------------------------------------------------------------------------------
+5. QUICK SUMMARY MATRIX
+--------------------------------------------------------------------------------
++--------------------+----------------+----------------------------------------+
+| Classroom Scenario | Trigger Timing | Primary Action                         |
++--------------------+----------------+----------------------------------------+
+| Student Enrollment | AFTER INSERT   | Insert audit record into student_log   |
+| Salary Increment   | AFTER UPDATE   | Capture old and new values in log      |
+| Salary Floor Rule  | BEFORE INSERT  | Set salary = 20000 if input < 20000    |
+| Negative Sal Rule  | BEFORE UPDATE  | Set salary = 0 if input < 0            |
+| Employee Removal   | BEFORE DELETE  | Log old details & print deletion alert |
++--------------------+----------------+----------------------------------------+
+================================================================================

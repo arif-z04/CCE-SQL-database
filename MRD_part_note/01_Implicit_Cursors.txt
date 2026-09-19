@@ -1,0 +1,169 @@
+================================================================================
+CLASSROOM STUDY NOTE: PL/SQL IMPLICIT CURSORS
+Source Material: MRD_part/ (Implicit Cursor-Explicit Cursor files)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/01_Implicit_Cursors.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION TO PL/SQL & SERVER OUTPUT
+--------------------------------------------------------------------------------
+Before introducing cursors, Murad Sir establishes the foundational anatomy of an 
+anonymous PL/SQL block in Oracle SQL*Plus:
+
+    SQL> SET SERVEROUTPUT ON;
+
+    DECLARE
+        -- Variable declaration with data types (NUMBER, VARCHAR2, DATE)
+        v_message VARCHAR2(50) := 'Hello World, Welcome to PL/SQL!';
+    BEGIN
+        -- Output command to display text in SQL*Plus terminal
+        DBMS_OUTPUT.PUT_LINE(v_message);
+    END;
+    /
+
+Key Classroom Takeaways:
+- `SET SERVEROUTPUT ON`: A SQL*Plus environment setting required once per session 
+  to enable the terminal display buffer for `DBMS_OUTPUT.PUT_LINE`.
+- An anonymous block consists of `DECLARE` (optional), `BEGIN` (mandatory execution), 
+  and `END; /` (statement terminator and execution trigger).
+
+
+--------------------------------------------------------------------------------
+2. CLASSROOM SCHEMA & SEED DATA SETUP
+--------------------------------------------------------------------------------
+The classroom demonstrations are built upon the `Employees` table:
+
+    DROP TABLE Employees;
+
+    CREATE TABLE Employees (
+        ID         NUMBER(5) PRIMARY KEY,
+        NAME       VARCHAR2(50) NOT NULL,
+        DEPARTMENT VARCHAR2(30),
+        SALARY     NUMBER(10, 2)
+    );
+
+    -- 5 Sample Employees Seeded:
+    INSERT INTO Employees (ID, NAME, DEPARTMENT, SALARY) VALUES (101, 'Rahim Islam',     'IT',      50000);
+    INSERT INTO Employees (ID, NAME, DEPARTMENT, SALARY) VALUES (102, 'Karim Hassan',    'IT',      50000);
+    INSERT INTO Employees (ID, NAME, DEPARTMENT, SALARY) VALUES (103, 'Nusrat Jahan',    'HR',      45000);
+    INSERT INTO Employees (ID, NAME, DEPARTMENT, SALARY) VALUES (104, 'Tanvir Hossain',  'HR',      40000);
+    INSERT INTO Employees (ID, NAME, DEPARTMENT, SALARY) VALUES (105, 'Ayesha Siddiqua', 'Finance', 60000);
+
+    COMMIT;
+
+
+--------------------------------------------------------------------------------
+3. WHAT IS AN IMPLICIT CURSOR? (CONCEPT & PURPOSE)
+--------------------------------------------------------------------------------
+An Implicit Cursor is automatically created and managed by Oracle whenever a SQL 
+DML statement (INSERT, UPDATE, DELETE) or single-row `SELECT INTO` query runs 
+inside a PL/SQL block.
+
+In Murad Sir's class, students learn that:
+- You do NOT need to write `OPEN`, `FETCH`, or `CLOSE`.
+- Oracle automatically allocates memory for the cursor, executes the DML, and 
+  closes it instantly.
+- The outcome of the statement is immediately inspected via the `SQL%` cursor 
+  attribute object.
+
+
+--------------------------------------------------------------------------------
+4. CLASSROOM EXAMPLES & CODE WALKTHROUGH
+--------------------------------------------------------------------------------
+
+Example A: Updating IT Department Salaries & Inspecting SQL%FOUND and SQL%ROWCOUNT
+Business Scenario: Give all employees in the 'IT' department a 10% salary raise.
+
+    SET SERVEROUTPUT ON;
+
+    DECLARE
+        v_rows_updated NUMBER;
+    BEGIN
+        -- IT department salary increment by 10%
+        UPDATE Employees
+           SET Salary = Salary + (Salary * 0.10)
+         WHERE Department = 'IT';
+
+        -- Inspect Implicit Cursor Attributes
+        IF SQL%FOUND THEN
+            v_rows_updated := SQL%ROWCOUNT;
+            DBMS_OUTPUT.PUT_LINE('মোট ' || v_rows_updated || ' জনের বেতন আপডেট করা হয়েছে।');
+        ELSE
+            DBMS_OUTPUT.PUT_LINE('কোনো কর্মীর তথ্য আপডেট হয়নি।');
+        END IF;
+
+        COMMIT;
+    END;
+    /
+
+Actual SQL*Plus Terminal Output:
+    মোট 2 জনের বেতন আপডেট করা হয়েছে।
+    PL/SQL procedure successfully completed.
+
+Explanation:
+- `Department = 'IT'` matches 2 employees (Rahim Islam and Karim Hassan).
+- `SQL%FOUND` evaluates to TRUE.
+- `SQL%ROWCOUNT` returns 2.
+
+Example B: Testing When No Rows Match (SQL%NOTFOUND)
+Business Scenario: Attempting an update on a non-existent department ('ITT').
+
+    SET SERVEROUTPUT ON;
+
+    DECLARE
+        v_rows_updated NUMBER;
+    BEGIN
+        UPDATE Employees
+           SET Salary = Salary + (Salary * 0.10)
+         WHERE Department = 'ITT';
+
+        IF SQL%NOTFOUND THEN
+            v_rows_updated := SQL%ROWCOUNT;
+            DBMS_OUTPUT.PUT_LINE('কোনো কর্মীর তথ্য আপডেট হয়নি। (Affected rows: ' || v_rows_updated || ')');
+        END IF;
+
+        COMMIT;
+    END;
+    /
+
+Actual Output:
+    কোনো কর্মীর তথ্য আপডেট হয়নি। (Affected rows: 0)
+
+Explanation:
+- No records match `'ITT'`.
+- `SQL%FOUND` is FALSE; `SQL%NOTFOUND` is TRUE; `SQL%ROWCOUNT` is 0.
+
+
+--------------------------------------------------------------------------------
+5. CLASSROOM ENVIRONMENT & TERMINAL DEBUGGING TIP
+--------------------------------------------------------------------------------
+In the class logs (`Implicit Cursor-Explicit Cursor 10-8-26.txt`), the SQL*Plus 
+session encountered distorted Bengali output (`??? 2 ???? ???? ????? ??? ??????`) 
+on Windows command prompt due to code page mismatch.
+
+Murad Sir resolved this using Windows terminal configuration:
+    C:\Windows\System32> chcp 65001
+    Active code page: 65001
+
+    C:\Windows\System32> set NLS_LANG=.AL32UTF8
+
+    C:\Windows\System32> sqlplus
+
+- `chcp 65001`: Switches Windows Command Prompt to UTF-8 encoding.
+- `set NLS_LANG=.AL32UTF8`: Tells the Oracle client to decode strings in UTF-8, 
+  allowing Bangla characters to display correctly.
+
+
+--------------------------------------------------------------------------------
+6. SUMMARY CHEAT SHEET FOR EXAMS
+--------------------------------------------------------------------------------
++------------------+-----------------------------------------------------------+
+| Attribute        | Meaning & Behavior                                        |
++------------------+-----------------------------------------------------------+
+| SQL%FOUND        | TRUE if the DML statement affected 1 or more rows.        |
+| SQL%NOTFOUND     | TRUE if the DML statement affected 0 rows.                |
+| SQL%ROWCOUNT     | Exact integer count of rows affected by the statement.    |
+| SQL%ISOPEN       | Always FALSE for implicit cursors in PL/SQL.              |
++------------------+-----------------------------------------------------------+
+================================================================================

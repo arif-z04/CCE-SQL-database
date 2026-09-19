@@ -1,0 +1,172 @@
+================================================================================
+CLASSROOM STUDY NOTE: ADVANCED SQL CONCEPTS
+Source Material: MRD_part/ (Advance SQL Concepts.txt)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/07_Advanced_SQL_Concepts.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. OVERVIEW & SCHEMA SETUP
+--------------------------------------------------------------------------------
+In the Advanced SQL module, Murad Sir demonstrates enterprise SQL querying techniques 
+using a normalized two-table organizational model featuring primary keys, foreign 
+keys, and a self-referencing managerial hierarchy.
+
+A. Tables DDL:
+
+    CREATE TABLE DEPARTMENTS (
+        dept_id   NUMBER PRIMARY KEY,
+        dept_name VARCHAR2(50) NOT NULL
+    );
+
+    CREATE TABLE EMPLOYEES (
+        emp_id     NUMBER PRIMARY KEY,
+        emp_name   VARCHAR2(50) NOT NULL,
+        salary     NUMBER(10, 2),
+        dept_id    NUMBER,
+        manager_id NUMBER,
+        CONSTRAINT fk_department FOREIGN KEY (dept_id) REFERENCES DEPARTMENTS(dept_id),
+        CONSTRAINT fk_manager    FOREIGN KEY (manager_id) REFERENCES EMPLOYEES(emp_id)
+    );
+
+B. Seed Data (Organizational Tree):
+
+    INSERT INTO DEPARTMENTS VALUES (10, 'Administration');
+    INSERT INTO DEPARTMENTS VALUES (20, 'Software Engineering');
+    INSERT INTO DEPARTMENTS VALUES (30, 'Finance & Accounting');
+    INSERT INTO DEPARTMENTS VALUES (40, 'Human Resources');
+    INSERT INTO DEPARTMENTS VALUES (50, 'Marketing');
+
+    -- ১. সিইও (কোনো ম্যানেজার নেই)
+    INSERT INTO EMPLOYEES VALUES (101, 'Rahim Chowdhury', 120000.00, 10, NULL);
+    -- ২. সফটওয়্যার লিড (ম্যানেজার: 101)
+    INSERT INTO EMPLOYEES VALUES (102, 'Karim Hasan',      85000.00, 20, 101);
+    -- ৩. অ্যাকাউন্টস হেড (ম্যানেজার: 101)
+    INSERT INTO EMPLOYEES VALUES (103, 'Nusrat Jahan',     75000.00, 30, 101);
+    -- ৪. জুনিয়র ডেভেলপার (ম্যানেজার: 102)
+    INSERT INTO EMPLOYEES VALUES (104, 'Tanvir Ahmed',     45000.00, 20, 102);
+    -- ৫. এইচআর এক্সিকিউটিভ (ম্যানেজার: 101)
+    INSERT INTO EMPLOYEES VALUES (105, 'Sultana Razia',    50000.00, 40, 101);
+
+    COMMIT;
+
+
+--------------------------------------------------------------------------------
+2. CONCEPT 1: SUBQUERIES IN THE WHERE CLAUSE
+--------------------------------------------------------------------------------
+Problem: Find all employees whose salary is strictly greater than the company average.
+
+    SELECT emp_id, emp_name, salary
+      FROM EMPLOYEES
+     WHERE salary > (SELECT AVG(salary) FROM EMPLOYEES);
+
+Actual Terminal Output:
+    EMP_ID | EMP_NAME        | SALARY
+    -------+-----------------+-------
+       101 | Rahim Chowdhury | 120000
+       102 | Karim Hasan     |  85000
+
+Classroom Logic:
+1. The inner subquery `(SELECT AVG(salary) FROM EMPLOYEES)` evaluates first, 
+   returning the single scalar value 75,000.
+2. The outer query filters `WHERE salary > 75000`.
+3. Only Rahim Chowdhury (120,000) and Karim Hasan (85,000) qualify.
+
+
+--------------------------------------------------------------------------------
+3. CONCEPT 2: SQL JOINS (INNER, LEFT OUTER & SELF-JOIN)
+--------------------------------------------------------------------------------
+
+A. Inner Join:
+Retrieves matching records from both tables.
+
+    SELECT e.emp_name, d.dept_name
+      FROM EMPLOYEES e
+     INNER JOIN DEPARTMENTS d ON e.dept_id = d.dept_id;
+
+B. Self-Join (Employee-to-Manager Mapping):
+A table joined to itself to resolve hierarchical reporting lines.
+
+    SELECT e.emp_name AS Employee, 
+           m.emp_name AS Manager
+      FROM EMPLOYEES e
+      LEFT JOIN EMPLOYEES m ON e.manager_id = m.emp_id;
+
+Actual Terminal Output:
+    EMPLOYEE        | MANAGER
+    ----------------+----------------
+    Karim Hasan     | Rahim Chowdhury
+    Tanvir Ahmed    | Karim Hasan
+    Nusrat Jahan    | Rahim Chowdhury
+    Sultana Razia   | Rahim Chowdhury
+    Rahim Chowdhury | NULL  <-- CEO has no manager; retained due to LEFT JOIN!
+
+
+--------------------------------------------------------------------------------
+4. CONCEPT 3: SET OPERATORS (UNION)
+--------------------------------------------------------------------------------
+Problem: Combine employees belonging to Department 20 and Department 30.
+
+    SELECT emp_name, salary FROM EMPLOYEES WHERE dept_id = 20
+    UNION
+    SELECT emp_name, salary FROM EMPLOYEES WHERE dept_id = 30;
+
+Actual Terminal Output:
+    EMP_NAME     | SALARY
+    -------------+-------
+    Karim Hasan  |  85000
+    Tanvir Ahmed |  45000
+
+Key Classroom Takeaway:
+`UNION` merges the result sets and performs automatic deduplication. (If duplicates 
+are permitted and sorting overhead is to be avoided, `UNION ALL` is used).
+
+
+--------------------------------------------------------------------------------
+5. CONCEPT 4: AGGREGATE GROUPING (GROUP BY)
+--------------------------------------------------------------------------------
+Problem: Calculate the total headcount and total payroll cost per department.
+
+    SELECT dept_id, 
+           COUNT(emp_id) AS Total_Employees, 
+           SUM(salary)   AS Total_Salary
+      FROM EMPLOYEES
+     GROUP BY dept_id;
+
+Actual Terminal Output:
+    DEPT_ID | TOTAL_EMPLOYEES | TOTAL_SALARY
+    --------+-----------------+-------------
+         10 |               1 |       120000
+         20 |               2 |       130000
+         30 |               1 |        75000
+         40 |               1 |        50000
+
+
+--------------------------------------------------------------------------------
+6. CONCEPT 5: DATABASE VIEWS
+--------------------------------------------------------------------------------
+Concept: "ভিউ তৈরি করার কমান্ড" (Command to create a virtual stored query).
+
+A. Creating the View:
+    CREATE VIEW high_salary_emp AS
+    SELECT emp_id, emp_name, salary
+      FROM EMPLOYEES
+     WHERE salary > 50000;
+
+    -- Output: View created.
+
+B. Querying the View:
+    SELECT * FROM high_salary_emp;
+
+Actual Terminal Output:
+    EMP_ID | EMP_NAME        | SALARY
+    -------+-----------------+-------
+       101 | Rahim Chowdhury | 120000
+       102 | Karim Hasan     |  85000
+
+Why Murad Sir Teaches Views:
+1. Security: Hide sensitive columns (like `manager_id` or other departments).
+2. Simplification: Encapsulates complex filtering so users can run a simple 
+   `SELECT * FROM view_name`.
+3. Maintenance: Centralizes query logic at the database layer.
+================================================================================

@@ -1,0 +1,158 @@
+================================================================================
+CLASSROOM STUDY NOTE: BEFORE VS. AFTER TRIGGERS
+Source Material: MRD_part/ (Trigger part4.txt & 2. AFTER Trigger.txt)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/04_BEFORE_and_AFTER_Triggers.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. CORE CONCEPT & TIMING DISTINCTION
+--------------------------------------------------------------------------------
+Murad Sir emphasizes that the choice between BEFORE and AFTER depends entirely on 
+the objective of the business requirement:
+
+- BEFORE Trigger:
+  * Executes BEFORE the base database operation is applied to the table.
+  * Purpose: Data validation, sanitization, and in-flight value modification.
+  * Capability: Can read and MODIFY `:NEW.column` values before they are written.
+
+- AFTER Trigger:
+  * Executes AFTER the base database operation has been committed to the row.
+  * Purpose: Auditing, change tracking, and notifications.
+  * Capability: `:NEW` and `:OLD` are READ-ONLY. Data is guaranteed to have 
+    succeeded on the base table.
+
+
+--------------------------------------------------------------------------------
+2. CLASSROOM IMPLEMENTATIONS: BEFORE TRIGGERS
+--------------------------------------------------------------------------------
+
+A. BEFORE INSERT: Enforcing Minimum Salary Policy
+Scenario: Any newly added employee must have a minimum salary of 20,000. If the user 
+inputs a lower salary, the trigger automatically corrects it to 20,000.
+
+    CREATE OR REPLACE TRIGGER trg_before_employee
+    BEFORE INSERT ON employee
+    FOR EACH ROW
+    BEGIN
+        IF :NEW.salary < 20000 THEN
+            :NEW.salary := 20000;
+        END IF;
+    END;
+    /
+
+Execution Trace:
+    INSERT INTO employee VALUES (106, 'Rony', 15000);
+    SELECT * FROM employee WHERE emp_id = 106;
+
+Result:
+    EMP_ID | NAME | SALARY
+    -------+------+-------
+    106    | Rony | 20000
+
+Under the Hood Execution Flow:
+    User submits salary = 15000
+                 ↓
+       BEFORE Trigger fires
+                 ↓
+     :NEW.salary updated to 20000
+                 ↓
+       Physical INSERT occurs with 20000
+
+B. BEFORE UPDATE: Correcting Negative Salary Input
+Scenario: If an update attempts to assign a negative salary, override it to 0.
+
+    CREATE OR REPLACE TRIGGER trg_before_salary_update
+    BEFORE UPDATE OF salary ON employee
+    FOR EACH ROW
+    BEGIN
+        IF :NEW.salary < 0 THEN
+            :NEW.salary := 0;
+        END IF;
+    END;
+    /
+
+Execution Trace:
+    UPDATE employee SET salary = -5000 WHERE emp_id = 101;
+    SELECT * FROM employee WHERE emp_id = 101;
+
+Result:
+    EMP_ID | NAME  | SALARY
+    -------+-------+-------
+    101    | Rahim | 0
+
+C. BEFORE DELETE: Pre-Deletion Console Notification
+Scenario: Alert the DBA/developer before an employee row is permanently deleted.
+
+    CREATE OR REPLACE TRIGGER trg_before_delete
+    BEFORE DELETE ON employee
+    FOR EACH ROW
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE(
+            'Employee ' || :OLD.name || ' will be deleted.'
+        );
+    END;
+    /
+
+Execution Trace:
+    DELETE FROM employee WHERE emp_id = 105;
+Terminal Output:
+    Employee Sakib will be deleted.
+    1 row deleted.
+
+
+--------------------------------------------------------------------------------
+3. CLASSROOM IMPLEMENTATIONS: AFTER TRIGGERS
+--------------------------------------------------------------------------------
+
+AFTER UPDATE: Salary Audit Log
+Scenario: When an employee's salary changes, record both the old and new values in an 
+audit log table.
+
+Setup Log Table:
+    CREATE TABLE salary_log (
+        emp_id      NUMBER,
+        old_salary  NUMBER,
+        new_salary  NUMBER,
+        change_date DATE
+    );
+
+Trigger Definition:
+    CREATE OR REPLACE TRIGGER trg_after_update
+    AFTER UPDATE OF salary ON employee
+    FOR EACH ROW
+    BEGIN
+        INSERT INTO salary_log
+        VALUES (:OLD.emp_id, :OLD.salary, :NEW.salary, SYSDATE);
+    END;
+    /
+
+Execution Trace:
+    UPDATE employee
+       SET salary = 30000
+     WHERE emp_id = 101;
+
+    SELECT * FROM salary_log;
+
+Result:
+    EMP_ID | OLD_SALARY | NEW_SALARY | CHANGE_DATE
+    -------+------------+------------+------------
+    101    | 25000      | 30000      | 17-SEP-26
+
+Classroom Rule:
+"👉 অর্থাৎ আগে UPDATE হবে, তারপর Trigger log তৈরি করবে।"
+(First the UPDATE completes on the table, then the AFTER trigger generates the log).
+
+
+--------------------------------------------------------------------------------
+4. COMPARATIVE MATRIX FOR EXAMS
+--------------------------------------------------------------------------------
++--------------------------+-----------------------+---------------------------+
+| Feature                  | BEFORE Trigger        | AFTER Trigger             |
++--------------------------+-----------------------+---------------------------+
+| Execution Timing         | Prior to table write  | Post table write          |
+| Can Modify :NEW Values?  | YES (:NEW.col := val) | NO (Read-Only; PLS-00363) |
+| Primary Use Case         | Validation / Defaulting| Auditing / Notifications  |
+| Access to :OLD Values?   | YES (Read-Only)       | YES (Read-Only)           |
++--------------------------+-----------------------+---------------------------+
+================================================================================

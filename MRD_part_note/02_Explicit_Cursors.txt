@@ -1,0 +1,144 @@
+================================================================================
+CLASSROOM STUDY NOTE: PL/SQL EXPLICIT CURSORS
+Source Material: MRD_part/ (Implicit Cursor-Explicit Cursor files)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/02_Explicit_Cursors.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. MOTIVATION & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+When a `SELECT` statement in PL/SQL returns MORE than one row, a simple `SELECT INTO` 
+fails with `ORA-01422: exact fetch returns more than requested number of rows`.
+
+To handle multi-row queries row-by-row, Oracle PL/SQL provides Explicit Cursors.
+An Explicit Cursor is a named cursor explicitly declared by the developer in the 
+`DECLARE` block to fetch and process multiple records sequentially.
+
+
+--------------------------------------------------------------------------------
+2. THE 4-STEP CLASSICAL LIFECYCLE
+--------------------------------------------------------------------------------
+Murad Sir teaches the classical explicit cursor lifecycle using four fundamental steps:
+
+  +-------------------+
+  | 1. DECLARE        | -> CURSOR cursor_name IS SELECT ...;
+  +-------------------+
+            |
+            v
+  +-------------------+
+  | 2. OPEN           | -> OPEN cursor_name; (Executes query & allocates memory)
+  +-------------------+
+            |
+            v
+  +-------------------+
+  | 3. FETCH          | -> FETCH cursor_name INTO variables; (Iterative loop)
+  +-------------------+    EXIT WHEN cursor_name%NOTFOUND;
+            |
+            v
+  +-------------------+
+  | 4. CLOSE          | -> CLOSE cursor_name; (Releases memory work area)
+  +-------------------+
+
+
+--------------------------------------------------------------------------------
+3. CLASSROOM IMPLEMENTATION 1: CLASSICAL MANUAL LIFECYCLE
+--------------------------------------------------------------------------------
+Query: Fetch all employees working in the 'IT' department.
+
+    SET SERVEROUTPUT ON;
+
+    DECLARE
+        -- ১. DECLARE: কার্সর তৈরি করা
+        CURSOR c_emp IS
+            SELECT ID, Name, Salary
+              FROM Employees
+             WHERE Department = 'IT';
+
+        -- ডাটা রাখার জন্য %TYPE ভিত্তিক ভ্যারিয়েবল ডিক্লেয়ারেশন
+        v_id     Employees.ID%TYPE;
+        v_name   Employees.Name%TYPE;
+        v_salary Employees.Salary%TYPE;
+    BEGIN
+        -- ২. OPEN: কার্সর ওপেন করা
+        OPEN c_emp;
+
+        LOOP
+            -- ৩. FETCH: এক এক করে রো ভ্যারিয়েবলে নেওয়া
+            FETCH c_emp INTO v_id, v_name, v_salary;
+
+            -- ডাটা না পেলে লুপ থেকে বের হয়ে যাওয়া
+            EXIT WHEN c_emp%NOTFOUND;
+
+            -- ডাটা প্রিন্ট করা
+            DBMS_OUTPUT.PUT_LINE('ID: ' || v_id || ' | Name: ' || v_name || ' | Salary: ' || v_salary);
+        END LOOP;
+
+        -- ৪. CLOSE: কার্সর ক্লোজ করা
+        CLOSE c_emp;
+    END;
+    /
+
+Actual Terminal Output:
+    ID: 101 | Name: Rahim Islam  | Salary: 55000
+    ID: 102 | Name: Karim Hassan | Salary: 55000
+    PL/SQL procedure successfully completed.
+
+Key Observations:
+- Anchored Types (`Employees.ID%TYPE`): Guarantees the variable matches the table 
+  column data type and length even if table DDL changes.
+- `c_emp%NOTFOUND`: Evaluates to TRUE when the active set reaches the end, cleanly 
+  breaking the `LOOP`.
+
+
+--------------------------------------------------------------------------------
+4. CLASSROOM IMPLEMENTATION 2: CURSOR FOR LOOP (MODERN APPROACH)
+--------------------------------------------------------------------------------
+Murad Sir introduces the Cursor FOR Loop as the "সহজ ও আধুনিক পদ্ধতি" 
+(Simple & Modern Method).
+
+Why the Cursor FOR Loop is superior:
+- The developer does NOT need to write `OPEN`, `FETCH`, or `CLOSE`.
+- The developer does NOT need to declare individual `%TYPE` variables.
+- Oracle automatically creates a record variable matching the cursor projection.
+- Oracle automatically opens the cursor, fetches each row, exits on `%NOTFOUND`, 
+  and guarantees `CLOSE` upon termination.
+
+Classroom Code:
+
+    SET SERVEROUTPUT ON;
+
+    DECLARE
+        CURSOR c_emp IS
+            SELECT ID, Name, Salary 
+              FROM Employees;
+    BEGIN
+        -- FOR Loop নিজেই OPEN, FETCH এবং CLOSE সামলে নেয়
+        FOR emp_record IN c_emp LOOP
+            DBMS_OUTPUT.PUT_LINE('Name: ' || emp_record.Name || ' - Salary: ' || emp_record.Salary);
+        END LOOP;
+    END;
+    /
+
+Actual Terminal Output:
+    Name: Rahim Islam - Salary: 55000
+    Name: Karim Hassan - Salary: 55000
+    Name: Nusrat Jahan - Salary: 45000
+    Name: Tanvir Hossain - Salary: 40000
+    Name: Ayesha Siddiqua - Salary: 60000
+    PL/SQL procedure successfully completed.
+
+
+--------------------------------------------------------------------------------
+5. COMPARISON SUMMARY: MANUAL VS. CURSOR FOR LOOP
+--------------------------------------------------------------------------------
++----------------------+-----------------------------+-------------------------+
+| Feature              | Classical Manual Fetch      | Modern Cursor FOR Loop  |
++----------------------+-----------------------------+-------------------------+
+| Explicit OPEN / CLOSE| Required (OPEN / CLOSE)     | Automated by Oracle     |
+| Variable Declaration | Required (%TYPE per column) | Automated record object |
+| Loop Exit Condition  | Manual: EXIT WHEN %NOTFOUND | Automated by Oracle     |
+| Risk of Memory Leak  | Moderate (if CLOSE omitted) | Zero (always closes)    |
+| Code Length          | 20+ lines                   | ~10 lines               |
++----------------------+-----------------------------+-------------------------+
+================================================================================

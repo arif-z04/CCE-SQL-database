@@ -1,0 +1,118 @@
+================================================================================
+CLASSROOM STUDY NOTE: INSERT TRIGGERS
+Source Material: MRD_part/ (4. INSERT Trigger.txt, Trigger part1, part4)
+Author: Murad Sir (MRD) Database Curriculum
+Target Directory: MRD_part_note/05_INSERT_Triggers.txt
+================================================================================
+
+--------------------------------------------------------------------------------
+1. DEFINITION & PSEUDO-RECORD BEHAVIOR
+--------------------------------------------------------------------------------
+An INSERT Trigger is a specialized trigger configured to execute exclusively when 
+new records are added to a table via an `INSERT` statement.
+
+Key Architectural Rule for INSERT Operations:
+- `:OLD` is COMPLETELY NULL: Because the record did not previously exist in the 
+  database, any attempt to read `:OLD.column` evaluates to NULL.
+- `:NEW` contains the incoming values provided by the client application or table 
+  default constraints.
+
+
+--------------------------------------------------------------------------------
+2. CLASSROOM IMPLEMENTATIONS
+--------------------------------------------------------------------------------
+
+A. Implementation 1: Console Notification Trigger (4. INSERT Trigger.txt)
+Concept: "শুধু INSERT হলে execute করবে।" (Executes only when an INSERT occurs).
+
+    CREATE OR REPLACE TRIGGER trg_insert_emp
+    AFTER INSERT ON employee
+    FOR EACH ROW
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE('New employee inserted');
+    END;
+    /
+
+Execution:
+    SET SERVEROUTPUT ON;
+    INSERT INTO employee VALUES (102, 'Karim', 25000);
+
+Terminal Output:
+    New employee inserted
+    1 row created.
+
+B. Implementation 2: Table Audit Logging (Trigger part1.txt)
+Concept: Automatically record every new student into a secondary audit log table.
+
+Setup Tables:
+    CREATE TABLE student (
+        student_id NUMBER,
+        name       VARCHAR2(50),
+        age        NUMBER
+    );
+
+    CREATE TABLE student_log (
+        student_id NUMBER,
+        name       VARCHAR2(50),
+        log_date   DATE
+    );
+
+Trigger Definition:
+    CREATE OR REPLACE TRIGGER trg_student_insert
+    AFTER INSERT ON student
+    FOR EACH ROW
+    BEGIN
+        INSERT INTO student_log
+        VALUES (:NEW.student_id, :NEW.name, SYSDATE);
+    END;
+    /
+
+Execution Flow:
+    INSERT INTO student
+           ↓
+    Trigger automatically fires
+           ↓
+    student_log-এ তথ্য INSERT
+
+Execution Verification:
+    INSERT INTO student VALUES (102, 'Rahim', 75);
+    SELECT * FROM student;
+    SELECT * FROM student_log;
+
+Output from student_log:
+    STUDENT_ID | NAME  | LOG_DATE
+    -----------+-------+----------
+    102        | Rahim | 17-SEP-26
+
+C. Implementation 3: In-Flight Value Normalization (Trigger part4.txt)
+Concept: Use a BEFORE INSERT trigger to enforce a minimum wage rule without throwing 
+an error.
+
+    CREATE OR REPLACE TRIGGER trg_before_employee
+    BEFORE INSERT ON employee
+    FOR EACH ROW
+    BEGIN
+        IF :NEW.salary < 20000 THEN
+            :NEW.salary := 20000;
+        END IF;
+    END;
+    /
+
+
+--------------------------------------------------------------------------------
+3. WHEN TO USE BEFORE INSERT VS. AFTER INSERT
+--------------------------------------------------------------------------------
++--------------------+---------------------------------------------------------+
+| Trigger Type       | Appropriate Use Cases                                   |
++--------------------+---------------------------------------------------------+
+| BEFORE INSERT      | - Auto-generating primary key sequences                 |
+|                    | - Formatting/standardizing strings (UPPER, TRIM)        |
+|                    | - Overriding invalid or out-of-range values             |
+|                    | - Validating data before storage                        |
++--------------------+---------------------------------------------------------+
+| AFTER INSERT       | - Inserting audit logs into child/history tables         |
+|                    | - Printing confirmation alerts via DBMS_OUTPUT          |
+|                    | - Propagating events to external tables or queues       |
+|                    | - Reading auto-generated identity values                |
++--------------------+---------------------------------------------------------+
+================================================================================
