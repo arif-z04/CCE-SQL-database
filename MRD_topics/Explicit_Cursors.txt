@@ -1,0 +1,360 @@
+================================================================================
+TUTORIAL: ORACLE PL/SQL EXPLICIT CURSORS
+Target Filename: Explicit_Cursors.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+In Oracle PL/SQL, an Explicit Cursor is a named, programmer-defined Private SQL 
+Area declared within the `DECLARE` section of a block, procedure, or package. It is 
+explicitly bound to a multi-row `SELECT` statement and operated through four discrete 
+procedural lifecycle instructions: `OPEN`, `FETCH`, `CLOSE`, and status checking 
+via cursor attributes (`%FOUND`, `%NOTFOUND`, `%ROWCOUNT`, `%ISOPEN`).
+
+Why it is used in Oracle Database:
+- Controlled Memory Footprint: Streams massive result sets from Oracle's Database 
+  Buffer Cache in chunks, avoiding massive PGA allocation and memory thrashing.
+- Procedural Data Flow: Enables row-level business evaluation, branching, and early 
+  loop termination.
+- Pessimistic Concurrency Control: Allows deterministic row-level locking via Oracle's 
+  `FOR UPDATE [OF column] [WAIT n | NOWAIT | SKIP LOCKED]` clause.
+- In-Place DML via ROWID Pointers: Enables high-performance row modifications using 
+  `WHERE CURRENT OF cursor_name` without requiring primary key index lookups.
+- Dynamic Result Sets: Supported via Strong and Weak Cursor Variables (`SYS_REFCURSOR`).
+
+Problems it solves:
+- Bypasses the strict single-row constraint of `SELECT INTO` (`ORA-01422: exact fetch returns more than requested number of rows`).
+- Eliminates out-of-memory crashes on multi-million-row batch operations when paired 
+  with `BULK COLLECT ... LIMIT`.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Oracle PGA / Cursor Work Area Lifecycle:
+When managing explicit cursors, the Oracle database coordinates the cursor across 
+four internal states:
+
+  1. DECLARE:
+     - Compiles the SQL text and registers cursor metadata in the PL/SQL symbol table.
+     - No memory allocation in session PGA occurs at this point.
+  2. OPEN:
+     - Binds any input parameters into the Private SQL Area in the session's PGA.
+     - Performs a Soft Parse via the SGA Library Cache (or a Hard Parse if new).
+     - Executes the query, identifies candidate data blocks, and creates the 
+       Active Set pointer tree.
+     - If `FOR UPDATE` is present, immediately issues Oracle TX Enqueue (Exclusive 
+       Row Locks in Mode 6) on all matching rows.
+  3. FETCH:
+     - Moves the active set pointer forward to the next row (or batch of rows).
+     - Copies column values from the Database Buffer Cache into the PGA variables.
+     - Updates cursor attributes: sets `%FOUND`, increments `%ROWCOUNT`.
+  4. CLOSE:
+     - Deallocates the PGA Cursor Work Area and releases the Active Set handle.
+     - Frees the slot counted toward the `OPEN_CURSORS` initialization parameter.
+
+B. Cursor Parameter Binding:
+Cursor parameters are evaluated strictly upon calling `OPEN`. Modifying parameter 
+source variables after `OPEN` has zero effect on the already established Active Set.
+
+C. Row Locking Mechanics in Oracle (FOR UPDATE):
+  - `FOR UPDATE WAIT <seconds>`: Waits up to the specified duration for conflicting 
+    locks to release, or raises `ORA-00054: resource busy and acquire with NOWAIT specified or timeout expired`.
+  - `FOR UPDATE NOWAIT`: Returns `ORA-00054` instantly if another session holds an uncommitted lock.
+  - `FOR UPDATE SKIP LOCKED`: Bypasses locked rows entirely; highly effective for 
+    building high-concurrency transactional queue workers in Oracle.
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE staff_roster CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE staff_roster (
+    staff_id     NUMBER(6) PRIMARY KEY,
+    name         VARCHAR2(80) NOT NULL,
+    division     VARCHAR2(40) NOT NULL,
+    grade        NUMBER(2)    NOT NULL,
+    base_salary  NUMBER(10, 2) NOT NULL,
+    comm_pct     NUMBER(4, 2)
+);
+
+INSERT INTO staff_roster VALUES (101, 'Marcus Wright',  'SALES',       3, 62000, 0.15);
+INSERT INTO staff_roster VALUES (102, 'Helena Troy',    'SALES',       4, 78000, 0.20);
+INSERT INTO staff_roster VALUES (103, 'David Kim',      'SALES',       2, 48000, 0.10);
+INSERT INTO staff_roster VALUES (104, 'Sarah Jenkins',  'ENGINEERING', 5, 95000, NULL);
+INSERT INTO staff_roster VALUES (105, 'Robert Vance',   'OPERATIONS',  3, 58000, NULL);
+COMMIT;
+
+-- =============================================================================
+-- Example 1: Standard Explicit Cursor Lifecycle with Cursor Attributes
+-- =============================================================================
+SET SERVEROUTPUT ON SIZE UNLIMITED;
+
+DECLARE
+    -- 1. Declare explicit cursor
+    CURSOR c_sales_staff IS
+        SELECT staff_id, name, base_salary
+          FROM staff_roster
+         WHERE division = 'SALES'
+         ORDER BY base_salary DESC;
+
+    -- Record based directly on cursor projection
+    v_staff c_sales_staff%ROWTYPE;
+BEGIN
+    -- 2. Open cursor
+    OPEN c_sales_staff;
+    DBMS_OUTPUT.PUT_LINE('--- Processing Sales Staff (Manual Lifecycle) ---');
+
+    LOOP
+        -- 3. Fetch row
+        FETCH c_sales_staff INTO v_staff;
+
+        -- Check attribute for loop termination
+        EXIT WHEN c_sales_staff%NOTFOUND;
+
+        DBMS_OUTPUT.PUT_LINE(
+            'Fetch #' || c_sales_staff%ROWCOUNT || ': ' ||
+            RPAD(v_staff.name, 18) || ' | Salary: ' || 
+            TO_CHAR(v_staff.base_salary, 'FML999,990.00')
+        );
+    END LOOP;
+
+    -- 4. Close cursor to release PGA memory
+    CLOSE c_sales_staff;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Defensive cleanup: prevent ORA-01000 leaks
+        IF c_sales_staff%ISOPEN THEN
+            CLOSE c_sales_staff;
+        END IF;
+        RAISE;
+END;
+/
+
+-- Sample Output:
+-- --- Processing Sales Staff (Manual Lifecycle) ---
+-- Fetch #1: Helena Troy        | Salary: $78,000.00
+-- Fetch #2: Marcus Wright      | Salary: $62,000.00
+-- Fetch #3: David Kim          | Salary: $48,000.00
+
+-- =============================================================================
+-- Example 2: Parameterized Cursor with Oracle's Cursor FOR Loop
+-- =============================================================================
+DECLARE
+    -- Parameterized cursor with default argument
+    CURSOR c_division_staff (
+        p_div    VARCHAR2,
+        p_salary NUMBER := 50000
+    ) IS
+        SELECT staff_id, name, grade, base_salary
+          FROM staff_roster
+         WHERE division = p_div
+           AND base_salary >= p_salary
+         ORDER BY base_salary ASC;
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('--- Parameterized Cursor FOR Loop ---');
+    -- Automatic OPEN, automated 100-row batch array fetch, and automated CLOSE
+    FOR r_staff IN c_division_staff(p_div => 'SALES', p_salary => 50000) LOOP
+        DBMS_OUTPUT.PUT_LINE(
+            'ID: ' || r_staff.staff_id || 
+            ' | Name: ' || RPAD(r_staff.name, 16) || 
+            ' | Salary: $' || r_staff.base_salary
+        );
+    END LOOP;
+END;
+/
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: High-Performance BULK COLLECT with LIMIT and Bounded Memory
+-- =============================================================================
+-- Enterprise pattern: Process million-row tables in controlled, memory-safe chunks.
+
+DECLARE
+    CURSOR c_all_staff IS
+        SELECT staff_id, name, base_salary
+          FROM staff_roster
+         ORDER BY staff_id;
+
+    TYPE t_staff_table IS TABLE OF c_all_staff%ROWTYPE;
+    v_buffer t_staff_table;
+
+    c_batch_limit CONSTANT PLS_INTEGER := 2; -- Small for demo; use 500-1000 in prod
+    v_total_processed PLS_INTEGER := 0;
+BEGIN
+    OPEN c_all_staff;
+    LOOP
+        -- Fetch next batch into PGA collection
+        FETCH c_all_staff BULK COLLECT INTO v_buffer LIMIT c_batch_limit;
+
+        -- Process whatever records were collected in this iteration
+        IF v_buffer.COUNT > 0 THEN
+            FOR i IN 1 .. v_buffer.COUNT LOOP
+                v_total_processed := v_total_processed + 1;
+            END LOOP;
+            DBMS_OUTPUT.PUT_LINE('Processed batch chunk of ' || v_buffer.COUNT || ' rows.');
+        END IF;
+
+        -- Exit condition must come AFTER buffer processing
+        EXIT WHEN c_all_staff%NOTFOUND;
+    END LOOP;
+    CLOSE c_all_staff;
+
+    DBMS_OUTPUT.PUT_LINE('Total staff members processed: ' || v_total_processed);
+END;
+/
+
+-- Sample Output:
+-- Processed batch chunk of 2 rows.
+-- Processed batch chunk of 2 rows.
+-- Processed batch chunk of 1 rows.
+-- Total staff members processed: 5
+
+-- =============================================================================
+-- Use Case 2: Concurrency Control with FOR UPDATE WAIT & WHERE CURRENT OF
+-- =============================================================================
+-- Guaranteed transactional safety. Uses WHERE CURRENT OF to execute direct ROWID updates.
+
+DECLARE
+    CURSOR c_commission_review IS
+        SELECT staff_id, base_salary, comm_pct
+          FROM staff_roster
+         WHERE division = 'SALES'
+           FOR UPDATE OF comm_pct, base_salary WAIT 5;
+
+    v_emp c_commission_review%ROWTYPE;
+BEGIN
+    OPEN c_commission_review;
+    LOOP
+        FETCH c_commission_review INTO v_emp;
+        EXIT WHEN c_commission_review%NOTFOUND;
+
+        IF v_emp.base_salary >= 70000 THEN
+            -- In-place physical ROWID update bypassing index navigation
+            UPDATE staff_roster
+               SET comm_pct = NVL(comm_pct, 0) + 0.05
+             WHERE CURRENT OF c_commission_review;
+        END IF;
+    END LOOP;
+    CLOSE c_commission_review;
+    COMMIT; -- Releases Oracle TX Enqueue locks
+    DBMS_OUTPUT.PUT_LINE('Pessimistic update completed successfully.');
+END;
+/
+
+-- =============================================================================
+-- Use Case 3: Dynamic Cursor Variables (SYS_REFCURSOR) across Packages
+-- =============================================================================
+CREATE OR REPLACE PACKAGE staff_query_pkg AS
+    TYPE t_strong_cur IS REF CURSOR RETURN staff_roster%ROWTYPE;
+    PROCEDURE get_staff_cv(p_div IN VARCHAR2, p_out_cv OUT SYS_REFCURSOR);
+END staff_query_pkg;
+/
+
+CREATE OR REPLACE PACKAGE BODY staff_query_pkg AS
+    PROCEDURE get_staff_cv(p_div IN VARCHAR2, p_out_cv OUT SYS_REFCURSOR) AS
+    BEGIN
+        OPEN p_out_cv FOR
+            SELECT *
+              FROM staff_roster
+             WHERE division = p_div;
+    END get_staff_cv;
+END staff_query_pkg;
+/
+
+DECLARE
+    v_cur       SYS_REFCURSOR;
+    v_rec       staff_roster%ROWTYPE;
+BEGIN
+    staff_query_pkg.get_staff_cv('ENGINEERING', v_cur);
+    LOOP
+        FETCH v_cur INTO v_rec;
+        EXIT WHEN v_cur%NOTFOUND;
+        DBMS_OUTPUT.PUT_LINE('Found Engineer: ' || v_rec.name || ' (Salary: $' || v_rec.base_salary || ')');
+    END LOOP;
+    CLOSE v_cur;
+END;
+/
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. The Automatic 100-Row Fetch of Cursor FOR Loops:
+   - In Oracle Database 10g and higher, the PL/SQL compiler automatically rewrites 
+     all `FOR rec IN cursor_name LOOP` constructs to execute an internal 100-row 
+     array fetch (`BULK COLLECT ... LIMIT 100`).
+   - For standard multi-row processing without custom limit tuning, the Cursor FOR 
+     Loop gives maximum performance with zero boilerplate and automatic closure!
+
+2. Avoiding ORA-01000: Maximum Open Cursors Exceeded:
+   - Check configured threshold: `SELECT value FROM v$parameter WHERE name = 'open_cursors';`
+   - Detect cursor leakage per Oracle session:
+       SELECT s.sid, s.serial#, s.username, COUNT(*) AS open_cursors
+         FROM v$open_cursor c
+         JOIN v$session s ON c.saddr = s.saddr
+        GROUP BY s.sid, s.serial#, s.username
+        ORDER BY open_cursors DESC;
+   - Anti-Pattern: Opening explicit cursors inside nested loops without closing 
+     them before the next loop iteration.
+
+3. The LIMIT Exit Trap in BULK COLLECT:
+   - If `LIMIT 100` is requested and the table has 150 rows:
+     * Iteration 1 fetches 100 rows -> `%NOTFOUND` is FALSE.
+     * Iteration 2 fetches the remaining 50 rows -> `%NOTFOUND` is TRUE!
+   - If you check `EXIT WHEN cursor%NOTFOUND` BEFORE processing, the final 50 rows 
+     are discarded! Always check `EXIT WHEN v_buffer.COUNT = 0` or place the exit 
+     condition strictly AFTER processing.
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
++------------------+-----------------------------------------------------------+
+| Cursor Attribute | Value / Return Description in Oracle                      |
++------------------+-----------------------------------------------------------+
+| cursor%FOUND     | BOOLEAN: TRUE if recent FETCH returned a row; FALSE if    |
+|                  | end of active set. NULL before first fetch.               |
+| cursor%NOTFOUND  | BOOLEAN: TRUE if recent FETCH hit end of active set;      |
+|                  | opposite of %FOUND. Evaluates FALSE upon OPEN.            |
+| cursor%ROWCOUNT  | NUMBER: Total rows fetched from cursor active set so far. |
+|                  | Evaluates to 0 immediately upon OPEN.                     |
+| cursor%ISOPEN    | BOOLEAN: TRUE if cursor is currently open in PGA;         |
+|                  | FALSE if unopened or closed.                              |
++------------------+-----------------------------------------------------------+
+
+Oracle Cursor Syntax Skeleton:
+------------------------------
+-- Declaration:
+CURSOR c_name [(param TYPE [:= default])] 
+[RETURN return_type] 
+IS SELECT ... [FOR UPDATE [OF col] [WAIT n | NOWAIT | SKIP LOCKED]];
+
+-- Lifecycle Operations:
+OPEN c_name [(args)];
+FETCH c_name INTO var1, var2 | record_var;
+FETCH c_name BULK COLLECT INTO coll_var LIMIT n;
+CLOSE c_name;
+
+-- Direct Update via ROWID Pointer:
+UPDATE tbl SET col = val WHERE CURRENT OF c_name;
+DELETE FROM tbl WHERE CURRENT OF c_name;
+================================================================================

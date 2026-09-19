@@ -1,0 +1,325 @@
+================================================================================
+TUTORIAL: ORACLE DATABASE TRIGGERS (OVERVIEW, LIFECYCLE & TYPES)
+Target Filename: Database_Triggers_Overview.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+In Oracle Database, a Database Trigger is a compiled stored PL/SQL program unit 
+associated with a table, view, schema, or the database itself. It is executed 
+("fired") automatically by the Oracle database engine whenever an associated 
+event occurs (DML, DDL, or Database System Event).
+
+Why it is used in Oracle Database:
+- Universal Auditing: Transparently captures schema changes and data modifications 
+  across all clients (SQL*Plus, JDBC, OCI, Python cx_Oracle / python-oracledb).
+- Multi-Table Business Rules: Enforces complex transactional invariants across 
+  tables that exceed declarative constraints (CHECK, UNIQUE, FK).
+- Security & Compliance: Intercepts unauthorized DDL operations, logs database logins, 
+  and tracks IP addresses, OS users, and host machines.
+- Derived Column & Real-Time Sync: Maintains denormalized counters or propagates 
+  synchronous events.
+
+Problems it solves:
+- Centralizes integrity rules at the core database level, preventing bypass by 
+  external applications.
+- Enables event-driven responses to system errors and maintenance events 
+  (e.g., catching `ORA-00942` via `AFTER SERVERERROR`).
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Oracle DML Trigger Execution Hierarchy & Firing Sequence:
+When Oracle executes a statement affecting multiple rows, the engine follows 
+a deterministic 12-step execution pipeline:
+
+  +---------------------------------------------------------------------------+
+  | 1. Execute BEFORE STATEMENT Triggers                                      |
+  +---------------------------------------------------------------------------+
+         |
+         v
+  +---------------------------------------------------------------------------+
+  | For EACH row affected by the statement:                                   |
+  |                                                                           |
+  |   a. Evaluate WHEN condition in SQL engine (if present)                   |
+  |   b. Execute BEFORE ROW Triggers (can modify :NEW values)                 |
+  |   c. Apply row change to block buffer cache, generate REDO/UNDO vectors   |
+  |   d. Validate declarative constraints (NOT NULL, CHECK, UNIQUE, FK)       |
+  |   e. Execute AFTER ROW Triggers (:NEW is now immutable)                   |
+  +---------------------------------------------------------------------------+
+         |
+         v
+  +---------------------------------------------------------------------------+
+  | 2. Execute AFTER STATEMENT Triggers                                       |
+  +---------------------------------------------------------------------------+
+         |
+         v
+  +---------------------------------------------------------------------------+
+  | 3. Complete Statement Execution (Awaiting user COMMIT/ROLLBACK)           |
+  +---------------------------------------------------------------------------+
+
+B. Pseudo-Records: :OLD and :NEW in Oracle:
+Oracle allocates transient memory structures within the PL/SQL work area during 
+row trigger evaluation:
++-----------+-----------------------------------+-----------------------------+
+| DML Event | :OLD Fields                       | :NEW Fields                 |
++-----------+-----------------------------------+-----------------------------+
+| INSERT    | All fields evaluate to NULL       | Values proposed for insert  |
+| UPDATE    | Original persisted block values   | Updated proposed values     |
+| DELETE    | Values prior to deletion          | All fields evaluate to NULL |
++-----------+-----------------------------------+-----------------------------+
+
+C. The Mutating Table Error (ORA-04091):
+- Cause: A table is considered "mutating" while an active DML statement is altering 
+  its rows. Under Oracle read-consistency (CR) rules, a row-level trigger is 
+  prohibited from querying or altering the table on which it is defined.
+- Error: `ORA-04091: table <SCHEMA>.<TABLE> is mutating, trigger/function may not see it`.
+- Native Oracle Solutions:
+  1. Compound Triggers (Oracle 11g+): Share state between Row and Statement sections.
+  2. Temporary tables / Package arrays with Statement Triggers.
+
+D. Firing Order Control (FOLLOWS / PRECEDES):
+Starting in Oracle 11g, multiple triggers on the same event can have deterministic 
+execution order defined via the `FOLLOWS` or `PRECEDES` keywords.
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE inventory_items CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP TABLE system_audit_log CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE inventory_items (
+    item_id       NUMBER(8) PRIMARY KEY,
+    item_code     VARCHAR2(30) NOT NULL UNIQUE,
+    category      VARCHAR2(50) NOT NULL,
+    unit_cost     NUMBER(10, 2) NOT NULL CHECK (unit_cost >= 0),
+    stock_qty     NUMBER(6) DEFAULT 0 CHECK (stock_qty >= 0)
+);
+
+CREATE TABLE system_audit_log (
+    audit_id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    entity_name   VARCHAR2(30),
+    action_type   VARCHAR2(20),
+    record_key    VARCHAR2(50),
+    db_user       VARCHAR2(50),
+    os_user       VARCHAR2(50),
+    client_ip     VARCHAR2(50),
+    logged_at     TIMESTAMP DEFAULT SYSTIMESTAMP,
+    payload       VARCHAR2(1000)
+);
+
+-- =============================================================================
+-- Example 1: BEFORE ROW Trigger with WHEN Clause and Input Transformation
+-- =============================================================================
+CREATE OR REPLACE TRIGGER trg_inventory_before_row
+BEFORE INSERT OR UPDATE ON inventory_items
+FOR EACH ROW
+WHEN (NEW.unit_cost > 0)
+BEGIN
+    -- Enforce canonical uppercase formatting
+    :NEW.item_code := UPPER(TRIM(:NEW.item_code));
+    :NEW.category  := INITCAP(TRIM(:NEW.category));
+
+    -- Enforce business policy: Hardware items cannot exceed $5,000 per unit
+    IF :NEW.category = 'Hardware' AND :NEW.unit_cost > 5000.00 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Compliance Violation: Hardware unit cost cannot exceed $5,000.00.');
+    END IF;
+END;
+/
+
+-- =============================================================================
+-- Example 2: AFTER ROW Trigger Auditing with Oracle SYS_CONTEXT Metadata
+-- =============================================================================
+CREATE OR REPLACE TRIGGER trg_inventory_audit_after_row
+AFTER INSERT OR UPDATE OR DELETE ON inventory_items
+FOR EACH ROW
+DECLARE
+    v_action VARCHAR2(10);
+    v_key    VARCHAR2(50);
+    v_detail VARCHAR2(1000);
+BEGIN
+    IF INSERTING THEN
+        v_action := 'INSERT';
+        v_key    := TO_CHAR(:NEW.item_id);
+        v_detail := 'Created item ' || :NEW.item_code || ' at cost $' || :NEW.unit_cost;
+    ELSIF UPDATING THEN
+        v_action := 'UPDATE';
+        v_key    := TO_CHAR(:NEW.item_id);
+        v_detail := 'Price changed from $' || :OLD.unit_cost || ' to $' || :NEW.unit_cost ||
+                    ' | Stock delta: ' || (:NEW.stock_qty - :OLD.stock_qty);
+    ELSIF DELETING THEN
+        v_action := 'DELETE';
+        v_key    := TO_CHAR(:OLD.item_id);
+        v_detail := 'Purged item ' || :OLD.item_code;
+    END IF;
+
+    INSERT INTO system_audit_log (
+        entity_name, action_type, record_key, 
+        db_user, os_user, client_ip, payload
+    ) VALUES (
+        'INVENTORY_ITEMS', v_action, v_key,
+        SYS_CONTEXT('USERENV', 'SESSION_USER'),
+        SYS_CONTEXT('USERENV', 'OS_USER'),
+        SYS_CONTEXT('USERENV', 'IP_ADDRESS'),
+        v_detail
+    );
+END;
+/
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: Eliminating ORA-04091 using an Oracle COMPOUND TRIGGER
+-- =============================================================================
+-- Business Rule: Total warehouse stock for any single category cannot exceed 
+-- 2,500 units. Attempting to run `SELECT SUM(stock_qty) FROM inventory_items` 
+-- inside an ordinary row trigger causes ORA-04091.
+
+CREATE OR REPLACE TRIGGER trg_check_cat_limit_compound
+FOR INSERT OR UPDATE OF stock_qty, category ON inventory_items
+COMPOUND TRIGGER
+
+    -- Shared array state alive for statement duration across all sections
+    TYPE t_cat_list IS TABLE OF BOOLEAN INDEX BY inventory_items.category%TYPE;
+    g_cats t_cat_list;
+
+    -- Stage 1: Reset shared memory prior to statement processing
+    BEFORE STATEMENT IS
+    BEGIN
+        g_cats.DELETE;
+    END BEFORE STATEMENT;
+
+    -- Stage 2: Buffer modified categories at the row level
+    AFTER EACH ROW IS
+    BEGIN
+        IF :NEW.category IS NOT NULL THEN
+            g_cats(:NEW.category) := TRUE;
+        END IF;
+    END AFTER EACH ROW;
+
+    -- Stage 3: After statement finishes, the table is no longer mutating! Safe to query.
+    AFTER STATEMENT IS
+        v_category inventory_items.category%TYPE;
+        v_total_stock NUMBER;
+    BEGIN
+        v_category := g_cats.FIRST;
+        WHILE v_category IS NOT NULL LOOP
+            SELECT NVL(SUM(stock_qty), 0)
+              INTO v_total_stock
+              FROM inventory_items
+             WHERE category = v_category;
+
+            IF v_total_stock > 2500 THEN
+                RAISE_APPLICATION_ERROR(
+                    -20005,
+                    'Inventory Rule Violation: Total stock for category ' || v_category ||
+                    ' is ' || v_total_stock || ', which exceeds the 2,500 unit ceiling.'
+                );
+            END IF;
+
+            v_category := g_cats.NEXT(v_category);
+        END LOOP;
+    END AFTER STATEMENT;
+
+END trg_check_cat_limit_compound;
+/
+
+-- =============================================================================
+-- Use Case 2: Schema-Level DDL Audit Trigger using Oracle System Event Attributes
+-- =============================================================================
+CREATE OR REPLACE TRIGGER trg_schema_ddl_guard
+BEFORE DDL ON SCHEMA
+DECLARE
+    PRAGMA AUTONOMOUS_TRANSACTION;
+    v_event_type VARCHAR2(30) := ORA_SYSEVENT;
+    v_obj_type   VARCHAR2(30) := ORA_DICT_OBJ_TYPE;
+    v_obj_name   VARCHAR2(30) := ORA_DICT_OBJ_NAME;
+BEGIN
+    -- Prevent dropping production tables during business hours
+    IF v_event_type = 'DROP' AND v_obj_type = 'TABLE' THEN
+        IF TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) BETWEEN 8 AND 18 THEN
+            RAISE_APPLICATION_ERROR(-20099, 'Security Policy: Dropping tables is blocked during business hours (08:00 - 18:00).');
+        END IF;
+    END IF;
+
+    -- Autonomous logging of all schema modifications
+    INSERT INTO system_audit_log (
+        entity_name, action_type, record_key, db_user, payload
+    ) VALUES (
+        v_obj_name, v_event_type, v_obj_type, USER,
+        'DDL operation executed on ' || v_obj_type || ' ' || v_obj_name
+    );
+    COMMIT;
+END;
+/
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. Engine Pre-Filtering with WHEN:
+   - Always filter row triggers using the `WHEN` clause (e.g. `WHEN (NEW.cost != OLD.cost)`).
+   - Why: The SQL engine checks the `WHEN` condition before initializing the PL/SQL 
+     execution environment. If false, zero context switches occur.
+
+2. Disabling Triggers during Oracle Data Pump (expdp / impdp) & Direct-Path Inserts:
+   - When running bulk loads with `/*+ APPEND */`, enabled triggers force Oracle to 
+     degrade from Direct-Path to conventional row-by-row buffer cache writes.
+   - Bulk loading commands:
+       ALTER TABLE inventory_items DISABLE ALL TRIGGERS;
+       -- Perform high-speed batch load...
+       ALTER TABLE inventory_items ENABLE ALL TRIGGERS;
+
+3. Querying Oracle Data Dictionary for Triggers:
+   - Find invalid triggers:
+       SELECT trigger_name, status, table_name FROM user_triggers WHERE status = 'DISABLED';
+   - Inspect trigger compilation errors:
+       SELECT line, position, text FROM user_errors WHERE type = 'TRIGGER' AND name = 'TRG_INVENTORY_BEFORE_ROW';
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
+Oracle Trigger Firing Taxonomy:
++-------------------+----------------------------+-----------------------------+
+| Timing / Level    | Permitted Target Objects   | Allowed Events              |
++-------------------+----------------------------+-----------------------------+
+| BEFORE Statement  | Table                      | INSERT, UPDATE, DELETE      |
+| BEFORE Each Row   | Table                      | INSERT, UPDATE, DELETE      |
+| AFTER Each Row    | Table                      | INSERT, UPDATE, DELETE      |
+| AFTER Statement   | Table                      | INSERT, UPDATE, DELETE      |
+| INSTEAD OF        | Non-updatable Views        | INSERT, UPDATE, DELETE      |
+| COMPOUND TRIGGER  | Table, View                | INSERT, UPDATE, DELETE      |
+| System / DDL      | SCHEMA, DATABASE           | CREATE, ALTER, DROP, LOGON  |
++-------------------+----------------------------+-----------------------------+
+
+Oracle Compound Trigger Syntax:
+-------------------------------
+CREATE OR REPLACE TRIGGER trg_name
+FOR {INSERT | UPDATE | DELETE} ON table_name
+COMPOUND TRIGGER
+    -- Declarations shared across stages
+    BEFORE STATEMENT IS BEGIN ... END BEFORE STATEMENT;
+    BEFORE EACH ROW  IS BEGIN ... END BEFORE EACH ROW;
+    AFTER EACH ROW   IS BEGIN ... END AFTER EACH ROW;
+    AFTER STATEMENT  IS BEGIN ... END AFTER STATEMENT;
+END;
+/
+================================================================================

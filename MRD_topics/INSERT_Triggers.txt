@@ -1,0 +1,301 @@
+================================================================================
+TUTORIAL: ORACLE PL/SQL INSERT TRIGGERS
+Target Filename: INSERT_Triggers.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+An INSERT Trigger is a specialized stored PL/SQL trigger that executes exclusively 
+in response to an `INSERT` statement against an Oracle table or view.
+
+It is implemented as:
+- BEFORE INSERT (Row-Level): Intercepts the row BEFORE it is validated against 
+  constraints and written to the database block. The `:NEW` pseudo-record is 
+  read-write, allowing in-flight value modification.
+- AFTER INSERT (Row-Level): Executes AFTER the row is written and constraints are 
+  validated. Used for logging, auditing, and foreign-key dependent child writes.
+- INSTEAD OF INSERT: Defined on non-updatable Oracle views to manually route 
+  incoming columns to the correct underlying normalized base tables.
+
+Why it is used in Oracle Database:
+- Primary Key Allocation (Pre-12c legacy or custom logic): Auto-populate sequence 
+  values if omitted.
+- In-Flight Canonical Normalization: Enforce uppercase codes, lowercase emails, 
+  and formatted phone numbers directly in the data engine.
+- Automated Audit Tracking: Automatically populate `created_by` and `created_at` 
+  using Oracle's `SYS_CONTEXT` and `SYSTIMESTAMP`.
+- Updatable Views: Allow client applications to perform simple INSERT statements 
+  against complex joined views.
+
+Problems it solves:
+- Eliminates client-side data hygiene discrepancies.
+- Guarantees complete audit trail consistency across heterogeneous client applications.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Pseudo-Record Behavior in Oracle INSERT Operations:
++---------------+--------------------------------------------------------------+
+| Pseudo-Record | State & Legality in INSERT Trigger                           |
++---------------+--------------------------------------------------------------+
+| :OLD          | Completely NULL. Any reference to :OLD.col returns NULL.     |
+|               | Any assignment attempt (:OLD.col := val) raises PLS-00363.   |
++---------------+--------------------------------------------------------------+
+| :NEW          | Initialized with values from the INSERT column list or       |
+|               | column DEFAULT values.                                       |
+|               | READ-WRITE in BEFORE INSERT row triggers.                    |
+|               | READ-ONLY in AFTER INSERT row triggers.                      |
++---------------+--------------------------------------------------------------+
+
+B. Lifecycle Pipeline:
+
+  1. Client executes: INSERT INTO customers (full_name, email) VALUES (...)
+  2. BEFORE INSERT ROW Trigger fires:
+     - Developer code assigns: `:NEW.customer_id := seq.NEXTVAL;`
+     - Developer code cleans:  `:NEW.email := LOWER(:NEW.email);`
+  3. Declarative Constraints Evaluated:
+     - Oracle validates NOT NULL, CHECK, UNIQUE, and FOREIGN KEY constraints 
+       against the MUTATED `:NEW` values!
+  4. Data Block Write:
+     - Block is written into Database Buffer Cache; Undo/Redo logged.
+  5. AFTER INSERT ROW Trigger fires:
+     - Child audit records or outbox queues are populated.
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE subscriber_accounts CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP SEQUENCE seq_subscriber_id';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE SEQUENCE seq_subscriber_id START WITH 10001 INCREMENT BY 1 NOCACHE;
+
+CREATE TABLE subscriber_accounts (
+    subscriber_id NUMBER(10) PRIMARY KEY,
+    full_name     VARCHAR2(100) NOT NULL,
+    email_address VARCHAR2(150) NOT NULL UNIQUE,
+    phone_number  VARCHAR2(20),
+    plan_tier     VARCHAR2(20) DEFAULT 'STANDARD'
+                  CONSTRAINT ck_plan CHECK (plan_tier IN ('STANDARD', 'PREMIUM', 'ENTERPRISE')),
+    created_by    VARCHAR2(50) NOT NULL,
+    created_date  TIMESTAMP NOT NULL
+);
+
+-- =============================================================================
+-- Implementation: BEFORE INSERT ROW Trigger
+-- Mutating :NEW values in-flight, sanitizing strings, and stamping metadata
+-- =============================================================================
+CREATE OR REPLACE TRIGGER trg_subscribers_before_insert
+BEFORE INSERT ON subscriber_accounts
+FOR EACH ROW
+BEGIN
+    -- 1. Sequence assignment if primary key is not supplied
+    IF :NEW.subscriber_id IS NULL THEN
+        :NEW.subscriber_id := seq_subscriber_id.NEXTVAL;
+    END IF;
+
+    -- 2. Cleanse and normalize string attributes
+    :NEW.full_name     := INITCAP(TRIM(:NEW.full_name));
+    :NEW.email_address := LOWER(TRIM(:NEW.email_address));
+
+    -- 3. Strip non-numeric characters from phone numbers using Oracle REGEXP_REPLACE
+    IF :NEW.phone_number IS NOT NULL THEN
+        :NEW.phone_number := REGEXP_REPLACE(:NEW.phone_number, '[^0-9]', '');
+    END IF;
+
+    -- 4. Mandatory Audit Stamping via Oracle System Context
+    :NEW.created_by   := COALESCE(SYS_CONTEXT('USERENV', 'SESSION_USER'), USER);
+    :NEW.created_date := SYSTIMESTAMP;
+END;
+/
+
+-- Verification Script:
+INSERT INTO subscriber_accounts (full_name, email_address, phone_number)
+VALUES ('  juliette binoche  ', ' Juliette.B@Example.COM ', '+1 (800) 555-0199');
+COMMIT;
+
+-- Query Result:
+-- SELECT subscriber_id, full_name, email_address, phone_number, created_by FROM subscriber_accounts;
+-- Result:
+-- SUBSCRIBER_ID | FULL_NAME        | EMAIL_ADDRESS          | PHONE_NUMBER | CREATED_BY
+-- 10001         | Juliette Binoche | juliette.b@example.com | 18005550199  | NOIR
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: INSTEAD OF INSERT Trigger on Multi-Table Normalized View
+-- =============================================================================
+-- In enterprise schemas, clients often insert against a unified view. 
+-- Oracle raises ORA-01776 (cannot modify more than one base table through a join view). 
+-- An INSTEAD OF INSERT trigger intercepts the statement and writes to both tables.
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP VIEW v_client_hierarchy';
+    EXECUTE IMMEDIATE 'DROP TABLE company_profiles CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP TABLE contact_persons CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE company_profiles (
+    company_id   NUMBER(8) PRIMARY KEY,
+    company_name VARCHAR2(100) NOT NULL,
+    industry     VARCHAR2(50) DEFAULT 'General'
+);
+
+CREATE TABLE contact_persons (
+    contact_id   NUMBER(8) PRIMARY KEY,
+    company_id   NUMBER(8) REFERENCES company_profiles(company_id),
+    contact_name VARCHAR2(100) NOT NULL,
+    contact_role VARCHAR2(50) DEFAULT 'Representative'
+);
+
+CREATE OR REPLACE VIEW v_client_hierarchy AS
+SELECT cp.company_id,
+       cp.company_name,
+       cp.industry,
+       ct.contact_id,
+       ct.contact_name,
+       ct.contact_role
+  FROM company_profiles cp
+  JOIN contact_persons ct ON cp.company_id = ct.company_id;
+
+-- Implement INSTEAD OF INSERT Trigger on View
+CREATE OR REPLACE TRIGGER trg_v_client_hierarchy_ins
+INSTEAD OF INSERT ON v_client_hierarchy
+FOR EACH ROW
+BEGIN
+    -- 1. Insert or ensure parent record exists
+    MERGE INTO company_profiles target
+    USING (SELECT :NEW.company_id AS cid, :NEW.company_name AS cname, :NEW.industry AS ind FROM DUAL) src
+       ON (target.company_id = src.cid)
+     WHEN NOT MATCHED THEN
+         INSERT (company_id, company_name, industry)
+         VALUES (src.cid, src.cname, NVL(src.ind, 'General'));
+
+    -- 2. Insert child contact record
+    INSERT INTO contact_persons (contact_id, company_id, contact_name, contact_role)
+    VALUES (:NEW.contact_id, :NEW.company_id, :NEW.contact_name, NVL(:NEW.contact_role, 'Representative'));
+END;
+/
+
+-- Verification Script:
+INSERT INTO v_client_hierarchy (company_id, company_name, industry, contact_id, contact_name, contact_role)
+VALUES (8801, 'Vanguard Tech', 'Software', 9901, 'Ada Lovelace', 'Lead Architect');
+COMMIT;
+
+-- Querying Base Tables:
+-- SELECT company_name, industry FROM company_profiles WHERE company_id = 8801; -> Vanguard Tech | Software
+-- SELECT contact_name, contact_role FROM contact_persons WHERE contact_id = 9901; -> Ada Lovelace | Lead Architect
+
+-- =============================================================================
+-- Use Case 2: Cross-Table Business Rule Validation before Insert
+-- =============================================================================
+-- Reject order insertion if the customer's total active orders exceed credit limit.
+
+CREATE OR REPLACE TRIGGER trg_validate_customer_exposure
+BEFORE INSERT ON customer_orders
+FOR EACH ROW
+DECLARE
+    v_active_exposure NUMBER(12, 2);
+    c_max_limit       CONSTANT NUMBER(12, 2) := 10000.00;
+BEGIN
+    SELECT NVL(SUM(order_total), 0)
+      INTO v_active_exposure
+      FROM customer_orders
+     WHERE customer_id = :NEW.customer_id
+       AND order_status IN ('PENDING', 'PROCESSING');
+
+    IF (v_active_exposure + :NEW.order_total) > c_max_limit THEN
+        RAISE_APPLICATION_ERROR(
+            -20015,
+            'Credit Check Failed: Customer #' || :NEW.customer_id || 
+            ' exposure ($' || (v_active_exposure + :NEW.order_total) || 
+            ') exceeds maximum allowed credit limit of $' || c_max_limit
+        );
+    END IF;
+END;
+/
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. Modern Oracle Alternative: Declarative Identity and Default Sequences:
+   - In Oracle 12c and later, avoid using BEFORE INSERT triggers solely for primary 
+     keys or timestamps.
+   - Declarative Syntax:
+       CREATE TABLE devices (
+           device_id   NUMBER GENERATED BY DEFAULT ON NULL AS IDENTITY PRIMARY KEY,
+           recorded_at TIMESTAMP DEFAULT ON NULL SYSTIMESTAMP NOT NULL
+       );
+   - Performance Benefit: Native identity sequences are handled inside Oracle's 
+     C-kernel during SQL execution, avoiding the PL/SQL context switch completely 
+     and delivering up to 400% higher insert throughput.
+
+2. Impact on Direct-Path INSERT /*+ APPEND */:
+   - When an application executes `INSERT /*+ APPEND */ INTO ...`, Oracle attempts 
+     to bypass the SGA buffer cache and write new blocks directly above the High 
+     Water Mark (HWM).
+   - If an enabled row-level trigger exists on the target table, Oracle CANNOT use 
+     direct-path mode and automatically degrades to conventional row-by-row inserts.
+   - For batch loading, disable the trigger, execute the direct-path insert, and 
+     re-enable the trigger.
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
+Oracle INSERT Trigger Skeletons:
+--------------------------------
+-- 1. BEFORE INSERT Row Trigger (Data cleansing / mutation):
+CREATE OR REPLACE TRIGGER trg_name
+BEFORE INSERT ON tbl_name
+FOR EACH ROW
+BEGIN
+    :NEW.column_name := UPPER(:NEW.column_name);
+END;
+/
+
+-- 2. AFTER INSERT Row Trigger (Audit / Cascade):
+CREATE OR REPLACE TRIGGER trg_name
+AFTER INSERT ON tbl_name
+FOR EACH ROW
+BEGIN
+    INSERT INTO audit_tbl (key_id, action) VALUES (:NEW.id, 'INSERT');
+END;
+/
+
+-- 3. INSTEAD OF INSERT (Views Only):
+CREATE OR REPLACE TRIGGER trg_name
+INSTEAD OF INSERT ON view_name
+FOR EACH ROW
+BEGIN
+    INSERT INTO base_tbl1 (...) VALUES (:NEW.col1);
+    INSERT INTO base_tbl2 (...) VALUES (:NEW.col2);
+END;
+/
+
+Rule Checklist:
+---------------
+- :OLD is ALWAYS NULL during INSERT.
+- :NEW can be modified ONLY in BEFORE row triggers.
+- INSTEAD OF is legal ONLY on Views.
+================================================================================

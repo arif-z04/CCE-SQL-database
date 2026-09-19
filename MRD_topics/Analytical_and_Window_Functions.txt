@@ -1,0 +1,321 @@
+================================================================================
+TUTORIAL: ORACLE ANALYTICAL & WINDOW FUNCTIONS
+Target Filename: Analytical_and_Window_Functions.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+In Oracle SQL, Analytical (or Window) Functions compute aggregate, ranking, or 
+navigational values over a specified group of rows—called a "window" or "partition"—
+that relates to the current row being processed.
+
+Unlike traditional `GROUP BY` aggregate operations that collapse multiple rows 
+into a single summary row, Oracle Analytical Functions return a result for EVERY 
+individual row, seamlessly displaying row-level detail alongside aggregate metrics.
+
+Why it is used in Oracle Database:
+- Eliminates Costly Self-Joins: Computes cumulative running totals, rankings, and 
+  moving averages in a single pass over the table dataset.
+- High-Performance C-Kernel Execution: Computed directly in the Oracle SQL query 
+  execution engine, eliminating procedural PL/SQL cursor loops.
+- Advanced Oracle Analytic Suite: Beyond standard ANSI window functions, Oracle provides 
+  native enterprise functions including `RATIO_TO_REPORT`, `LISTAGG ... OVER`, and 
+  the `KEEP (DENSE_RANK FIRST/LAST)` clause.
+
+Problems it solves:
+- Top-N per group queries (e.g. highest 3 transactions per customer).
+- Rolling financial balances and moving averages.
+- Period-over-Period time-series analysis (MoM, YoY) using `LAG` and `LEAD`.
+- Sequential island and streak detection (Gaps and Islands).
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Oracle Logical Query Processing Order:
+To understand where window functions execute, review Oracle's SQL evaluation order:
+
+  1. FROM & JOIN     -> Resolves source tables and join criteria
+  2. WHERE           -> Filters base rows
+  3. GROUP BY        -> Groups rows into summary buckets
+  4. HAVING          -> Filters grouped buckets
+  5. WINDOW FUNCTIONS-> Evaluates partitions, sorting, and frame buffers (HERE!)
+  6. SELECT          -> Evaluates final expressions and column aliases
+  7. DISTINCT        -> Deduplicates results
+  8. ORDER BY        -> Sorts presentation output
+  9. OFFSET / FETCH  -> Evaluates pagination (`FETCH FIRST n ROWS ONLY`)
+
+CRITICAL ORACLE ARCHITECTURAL RULE:
+Because Window Functions execute in Step 5 (AFTER the WHERE clause in Step 2), 
+you CANNOT place a window function directly in a WHERE or HAVING clause!
+- ILLEGAL: `SELECT * FROM emp WHERE ROW_NUMBER() OVER (ORDER BY sal) <= 3;` (ORA-30483)
+- SOLUTION: Wrap the query inside an Oracle Common Table Expression (WITH clause) 
+  or inline view, and filter the outer query.
+
+B. Oracle Engine Execution Internals:
+- Window Sorting: Oracle evaluates partitions via `PARTITION BY` and sorts them via 
+  `ORDER BY` using the session's PGA (Sort Work Area). In execution plans, this 
+  appears as `WINDOW (SORT)`.
+- Reusing Sort Order: If multiple window functions share identical `PARTITION BY` 
+  and `ORDER BY` clauses, Oracle shares the sorted work area, appearing as 
+  `WINDOW (BUFFER)`.
+- Sliding Window Frame Buffer: The engine maintains an in-memory sliding cursor 
+  buffer containing only rows within the physical (`ROWS`) or logical (`RANGE`) 
+  frame boundaries.
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE sales_ledger CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE sales_ledger (
+    ledger_id    NUMBER(6) PRIMARY KEY,
+    sales_rep    VARCHAR2(50) NOT NULL,
+    territory    VARCHAR2(20) NOT NULL,
+    booking_date DATE NOT NULL,
+    amount       NUMBER(12, 2) NOT NULL
+);
+
+INSERT INTO sales_ledger VALUES (1, 'Sarah Vance', 'EUROPE', DATE '2026-01-05', 12000.00);
+INSERT INTO sales_ledger VALUES (2, 'Sarah Vance', 'EUROPE', DATE '2026-01-12', 18000.00);
+INSERT INTO sales_ledger VALUES (3, 'John Mercer', 'EUROPE', DATE '2026-01-15', 15000.00);
+INSERT INTO sales_ledger VALUES (4, 'John Mercer', 'EUROPE', DATE '2026-01-20', 15000.00);
+INSERT INTO sales_ledger VALUES (5, 'Emma Stone',  'AMERICAS', DATE '2026-01-08', 30000.00);
+INSERT INTO sales_ledger VALUES (6, 'Emma Stone',  'AMERICAS', DATE '2026-01-18', 22000.00);
+INSERT INTO sales_ledger VALUES (7, 'Alex Rivera', 'AMERICAS', DATE '2026-01-22', 22000.00);
+INSERT INTO sales_ledger VALUES (8, 'Alex Rivera', 'AMERICAS', DATE '2026-01-25', 11000.00);
+COMMIT;
+
+-- =============================================================================
+-- Example 1: Ranking Functions (ROW_NUMBER vs. RANK vs. DENSE_RANK)
+-- =============================================================================
+SELECT territory,
+       sales_rep,
+       amount,
+       ROW_NUMBER() OVER (PARTITION BY territory ORDER BY amount DESC) AS row_num,
+       RANK()       OVER (PARTITION BY territory ORDER BY amount DESC) AS rnk,
+       DENSE_RANK() OVER (PARTITION BY territory ORDER BY amount DESC) AS dense_rnk
+  FROM sales_ledger
+ ORDER BY territory, amount DESC;
+
+/*
+Result Breakdown:
+TERRITORY | SALES_REP   | AMOUNT   | ROW_NUM | RNK | DENSE_RNK | NOTE
+----------+-------------+----------+---------+-----+-----------+-------------------------
+AMERICAS  | Emma Stone  | 30000.00 |       1 |   1 |         1 | Distinct Top
+AMERICAS  | Emma Stone  | 22000.00 |       2 |   2 |         2 | Tie
+AMERICAS  | Alex Rivera | 22000.00 |       3 |   2 |         2 | Tie: RANK=2, DENSE=2
+AMERICAS  | Alex Rivera | 11000.00 |       4 |   4 |         3 | Post-tie: RANK skips to 4
+EUROPE    | Sarah Vance | 18000.00 |       1 |   1 |         1 |
+EUROPE    | John Mercer | 15000.00 |       2 |   2 |         2 | Tie
+EUROPE    | John Mercer | 15000.00 |       3 |   2 |         2 | Tie: RANK=2, DENSE=2
+EUROPE    | Sarah Vance | 12000.00 |       4 |   4 |         3 | Post-tie: RANK skips to 4
+*/
+
+-- =============================================================================
+-- Example 2: Navigation & Oracle RATIO_TO_REPORT
+-- =============================================================================
+SELECT sales_rep,
+       booking_date,
+       amount,
+       -- Prior booking amount for this sales rep
+       LAG(amount, 1, 0) OVER (PARTITION BY sales_rep ORDER BY booking_date) AS prev_booking,
+       -- Next booking amount for this sales rep
+       LEAD(amount, 1, 0) OVER (PARTITION BY sales_rep ORDER BY booking_date) AS next_booking,
+       -- Oracle-specific: Share of rep's total sales contributed by this row
+       ROUND(RATIO_TO_REPORT(amount) OVER (PARTITION BY sales_rep) * 100, 2) AS pct_of_rep_total
+  FROM sales_ledger
+ ORDER BY sales_rep, booking_date;
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: Top-N per Group Pattern (Safe Deduplication)
+-- =============================================================================
+-- Retrieve the highest single transaction for each sales rep.
+
+WITH ranked_bookings AS (
+    SELECT ledger_id,
+           sales_rep,
+           territory,
+           booking_date,
+           amount,
+           ROW_NUMBER() OVER (
+               PARTITION BY sales_rep 
+               ORDER BY amount DESC, booking_date ASC
+           ) AS rank_seq
+      FROM sales_ledger
+)
+SELECT ledger_id, sales_rep, territory, booking_date, amount
+  FROM ranked_bookings
+ WHERE rank_seq = 1;
+
+-- =============================================================================
+-- Use Case 2: Running Balance & Rolling Moving Average with Explicit ROWS Frame
+-- =============================================================================
+SELECT ledger_id,
+       sales_rep,
+       booking_date,
+       amount,
+       -- Running cumulative revenue to date
+       SUM(amount) OVER (
+           ORDER BY booking_date 
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) AS cumulative_revenue,
+       -- Rolling 3-row moving average (1 before, current, 1 after)
+       ROUND(AVG(amount) OVER (
+           ORDER BY booking_date 
+           ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+       ), 2) AS rolling_3row_avg
+  FROM sales_ledger
+ ORDER BY booking_date;
+
+-- =============================================================================
+-- Use Case 3: Month-over-Month (MoM) Growth Analysis
+-- =============================================================================
+WITH monthly_sales AS (
+    SELECT TRUNC(booking_date, 'MM') AS sale_month,
+           SUM(amount)               AS total_revenue
+      FROM sales_ledger
+     GROUP BY TRUNC(booking_date, 'MM')
+)
+SELECT sale_month,
+       total_revenue,
+       LAG(total_revenue, 1) OVER (ORDER BY sale_month) AS prior_month_rev,
+       ROUND(
+           ((total_revenue - LAG(total_revenue, 1) OVER (ORDER BY sale_month)) 
+            / NULLIF(LAG(total_revenue, 1) OVER (ORDER BY sale_month), 0)) * 100,
+           2
+       ) AS mom_growth_pct
+  FROM monthly_sales
+ ORDER BY sale_month;
+
+-- =============================================================================
+-- Use Case 4: Solving "Gaps and Islands" with Oracle Date Arithmetic
+-- =============================================================================
+-- Detecting consecutive days of user activity.
+-- Formula: (login_date - ROW_NUMBER()) produces an identical anchor date for all 
+-- consecutive days in the same island.
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE user_sessions CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE user_sessions (
+    user_id     NUMBER(4),
+    access_date DATE
+);
+
+INSERT INTO user_sessions VALUES (101, DATE '2026-03-01');
+INSERT INTO user_sessions VALUES (101, DATE '2026-03-02');
+INSERT INTO user_sessions VALUES (101, DATE '2026-03-03'); -- Streak 1 (3 days)
+INSERT INTO user_sessions VALUES (101, DATE '2026-03-06');
+INSERT INTO user_sessions VALUES (101, DATE '2026-03-07'); -- Streak 2 (2 days)
+COMMIT;
+
+WITH marked_streaks AS (
+    SELECT user_id,
+           access_date,
+           access_date - ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY access_date) AS streak_anchor
+      FROM user_sessions
+)
+SELECT user_id,
+       MIN(access_date) AS streak_start,
+       MAX(access_date) AS streak_end,
+       (MAX(access_date) - MIN(access_date) + 1) AS consecutive_days
+  FROM marked_streaks
+ GROUP BY user_id, streak_anchor
+ ORDER BY streak_start;
+
+/*
+Result:
+USER_ID | STREAK_START | STREAK_END | CONSECUTIVE_DAYS
+--------+--------------+------------+-----------------
+101     | 2026-03-01   | 2026-03-03 |                3
+101     | 2026-03-06   | 2026-03-07 |                2
+*/
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. The Default Window Frame Danger (ROWS vs. RANGE):
+   - When an `ORDER BY` clause is present without an explicit frame:
+     Oracle silently defaults to:
+     `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+   - Danger 1 (Tie Corruption): `RANGE` groups rows with identical sort values 
+     together. If two rows share the same date, both rows will display the SUM 
+     of BOTH rows combined, corrupting the incremental running total!
+   - Danger 2 (Performance): `RANGE` performs logical value evaluation requiring 
+     extra memory. `ROWS` operates on physical row offsets and executes much faster.
+   - Golden Rule: Always write `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`.
+
+2. The LAST_VALUE() Framing Pitfall:
+   - Writing `LAST_VALUE(amount) OVER (PARTITION BY dept ORDER BY hire_date)` 
+     returns the CURRENT row instead of the partition's last row!
+   - Reason: The default frame stops at `CURRENT ROW`.
+   - Fix: Explicitly extend the frame to the end of the partition:
+     `LAST_VALUE(amount) OVER (PARTITION BY dept ORDER BY hire_date ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)`
+
+3. Index Optimization for Oracle Window Operations:
+   - Create a composite B-Tree index: `CREATE INDEX ix_ledger_perf ON sales_ledger (territory, amount DESC);`
+   - When executing `OVER (PARTITION BY territory ORDER BY amount DESC)`, the Oracle 
+     Optimizer can read the rows directly in order via an `INDEX FULL SCAN`, 
+     bypassing the `WINDOW (SORT)` operation entirely!
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
+Oracle Window Function Anatomy:
+-------------------------------
+<FUNCTION>() OVER (
+    [PARTITION BY col1, col2, ...]
+    [ORDER BY sort_col1 [ASC|DESC] [NULLS FIRST|LAST]]
+    [ROWS|RANGE BETWEEN <start_bound> AND <end_bound>]
+)
+
+Oracle Frame Boundaries:
+------------------------
+- UNBOUNDED PRECEDING : First row in partition
+- n PRECEDING         : n physical rows (or values in RANGE) before current row
+- CURRENT ROW         : Current row being evaluated
+- n FOLLOWING         : n physical rows (or values in RANGE) after current row
+- UNBOUNDED FOLLOWING : Last row in partition
+
+Function Reference:
+-------------------
++-----------------------+------------------------------------------------------+
+| Oracle Function       | Purpose / Behavioral Summary                         |
++-----------------------+------------------------------------------------------+
+| ROW_NUMBER()          | Sequential unique integers (1, 2, 3, 4); never ties  |
+| RANK()                | Shared ranking with gaps for ties (1, 2, 2, 4)       |
+| DENSE_RANK()          | Shared ranking without gaps for ties (1, 2, 2, 3)    |
+| NTILE(n)              | Distributes ordered partition into n buckets         |
+| LAG(col, [offset,def])| Fetches value from previous row                      |
+| LEAD(col,[offset,def])| Fetches value from subsequent row                    |
+| FIRST_VALUE(col)      | Value from first row in window frame                 |
+| LAST_VALUE(col)       | Value from last row in window frame                  |
+| RATIO_TO_REPORT(col)  | Oracle Native: Computes fraction of partition total  |
+| LISTAGG() OVER        | Oracle Native: Concatenates strings within partition |
++-----------------------+------------------------------------------------------+
+================================================================================

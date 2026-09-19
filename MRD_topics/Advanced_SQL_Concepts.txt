@@ -1,0 +1,332 @@
+================================================================================
+TUTORIAL: ORACLE ADVANCED SQL CONCEPTS
+Target Filename: Advanced_SQL_Concepts.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+Oracle Advanced SQL Concepts encompass declarative, high-performance database 
+constructs engineered to solve complex analytical, hierarchical, and data 
+synchronization problems natively within the Oracle Database query engine.
+
+Key Advanced Paradigms in Oracle:
+1. Hierarchical Queries (CONNECT BY vs. Recursive CTEs):
+   Oracle supports two distinct mechanisms for tree and network traversal:
+   - Native Oracle `CONNECT BY PRIOR ... START WITH ...` with pseudo-columns (`LEVEL`, 
+     `SYS_CONNECT_BY_PATH`, `CONNECT_BY_ROOT`, `CONNECT_BY_ISLEAF`).
+   - ANSI-standard Recursive Common Table Expressions (WITH clause recursion).
+2. Native Matrix Transposition (PIVOT & UNPIVOT):
+   Oracle 11g+ native SQL operators transforming normalized rows into columns and 
+   vice versa without cumbersome conditional `DECODE` or `CASE` expressions.
+3. Multi-Dimensional Aggregations (ROLLUP, CUBE, GROUPING SETS):
+   Generates subtotals, cross-tabulations, and super-aggregates in a single scan 
+   using Oracle's `GROUPING_ID()` function to identify summary levels.
+4. Lateral Joins (CROSS APPLY & OUTER APPLY):
+   Correlated joins (Oracle 12c+) that pass values from a left-hand table into an 
+   inline right-hand query or table function on a row-by-row basis.
+5. Atomic Synchronization (Oracle MERGE Statement):
+   High-concurrency UPSERT capability that conditionally updates, deletes, and 
+   inserts records in a single atomic operation.
+
+Problems it solves:
+- Eliminates procedural graph/tree traversal loops that exhaust PGA memory.
+- Reduces multiple full-table scans to a single table access when generating OLAP reports.
+- Solves data warehouse ETL synchronization bottlenecks.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Oracle Cost-Based Optimizer (CBO) Transformations:
+- CTE Inlining vs. Materialization:
+  - Inlining (`/*+ INLINE */`): The CBO merges the CTE directly into the outer 
+    query block, pushing predicates into the CTE for index evaluation.
+  - Materialization (`/*+ MATERIALIZE */`): Oracle evaluates the CTE once and writes 
+    the result set to a temporary Global Temporary Table structure in the session's 
+    Temporary Tablespace, reading it repeatedly to avoid recalculation.
+- Subquery Unnesting:
+  The CBO automatically unnests correlated subqueries in `WHERE EXISTS` into 
+  Hash Semi-Joins or Anti-Joins, eliminating iterative Nested Loop executions.
+
+B. Set Operation Mechanics in Oracle (UNION vs. UNION ALL vs. MINUS):
+  +---------------------------------------------------------------------------+
+  | UNION ALL : Concatenates row streams directly. Zero PGA buffer or sort.   |
+  +---------------------------------------------------------------------------+
+  | UNION     : Combines streams and performs a HASH UNIQUE or SORT UNIQUE    |
+  |             operation in the session's PGA Sort Work Area (or Temp).      |
+  +---------------------------------------------------------------------------+
+  | MINUS     : Oracle's set difference operator (ANSI EXCEPT equivalent).    |
+  |             Performs SORT UNIQUE on both sets and subtracts Set B from A. |
+  +---------------------------------------------------------------------------+
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE corp_hierarchy CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP TABLE regional_sales CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE corp_hierarchy (
+    emp_id    NUMBER(6) PRIMARY KEY,
+    name      VARCHAR2(50) NOT NULL,
+    mgr_id    NUMBER(6) REFERENCES corp_hierarchy(emp_id),
+    title     VARCHAR2(50) NOT NULL,
+    salary    NUMBER(10, 2) NOT NULL
+);
+
+INSERT INTO corp_hierarchy VALUES (1, 'Eleanor Vance', NULL, 'Chief Executive Officer', 250000);
+INSERT INTO corp_hierarchy VALUES (2, 'Thomas Drake',  1,    'VP of Technology',        160000);
+INSERT INTO corp_hierarchy VALUES (3, 'Rachel Zane',   1,    'VP of Operations',        155000);
+INSERT INTO corp_hierarchy VALUES (4, 'Marcus Brody',  2,    'Lead Architect',          120000);
+INSERT INTO corp_hierarchy VALUES (5, 'Claire Temple', 3,    'Operations Director',     110000);
+COMMIT;
+
+CREATE TABLE regional_sales (
+    channel  VARCHAR2(20),
+    quarter  VARCHAR2(10),
+    revenue  NUMBER(12, 2)
+);
+
+INSERT INTO regional_sales VALUES ('ONLINE', 'Q1', 125000);
+INSERT INTO regional_sales VALUES ('ONLINE', 'Q2', 142000);
+INSERT INTO regional_sales VALUES ('ONLINE', 'Q3', 165000);
+INSERT INTO regional_sales VALUES ('RETAIL', 'Q1', 89000);
+INSERT INTO regional_sales VALUES ('RETAIL', 'Q2', 95000);
+INSERT INTO regional_sales VALUES ('RETAIL', 'Q3', 104000);
+COMMIT;
+
+-- =============================================================================
+-- Example 1: Hierarchical Traversal (Oracle CONNECT BY vs. Recursive CTE)
+-- =============================================================================
+
+-- Method A: Oracle Native CONNECT BY
+SELECT LEVEL AS depth,
+       LPAD(' ', (LEVEL - 1) * 3) || name AS org_chart,
+       title,
+       SYS_CONNECT_BY_PATH(name, ' -> ') AS path_trace,
+       CONNECT_BY_ISLEAF AS is_leaf
+  FROM corp_hierarchy
+ START WITH mgr_id IS NULL
+CONNECT BY PRIOR emp_id = mgr_id
+ ORDER SIBLINGS BY salary DESC;
+
+-- Method B: ANSI Recursive CTE in Oracle (WITH clause)
+WITH org_cte (emp_id, name, mgr_id, title, depth, path_str) AS (
+    -- Anchor Member
+    SELECT emp_id, name, mgr_id, title, 1, CAST(name AS VARCHAR2(500))
+      FROM corp_hierarchy
+     WHERE mgr_id IS NULL
+    UNION ALL
+    -- Recursive Member
+    SELECT c.emp_id, c.name, c.mgr_id, c.title, p.depth + 1,
+           CAST(p.path_str || ' -> ' || c.name AS VARCHAR2(500))
+      FROM corp_hierarchy c
+      JOIN org_cte p ON c.mgr_id = p.emp_id
+)
+SELECT depth, LPAD(' ', (depth - 1) * 3) || name AS org_chart, title, path_str
+  FROM org_cte
+ ORDER BY depth, emp_id;
+
+-- =============================================================================
+-- Example 2: Matrix Transposition with Oracle PIVOT
+-- =============================================================================
+SELECT *
+  FROM regional_sales
+ PIVOT (
+     SUM(revenue)
+     FOR quarter IN ('Q1' AS q1_revenue, 'Q2' AS q2_revenue, 'Q3' AS q3_revenue)
+ )
+ ORDER BY channel;
+
+/*
+Result:
+CHANNEL | Q1_REVENUE | Q2_REVENUE | Q3_REVENUE
+--------+------------+------------+-----------
+ONLINE  |     125000 |     142000 |     165000
+RETAIL  |      89000 |      95000 |     104000
+*/
+
+-- =============================================================================
+-- Example 3: Multi-Dimensional Reporting with ROLLUP & GROUPING_ID
+-- =============================================================================
+SELECT channel,
+       quarter,
+       SUM(revenue) AS total_revenue,
+       GROUPING_ID(channel, quarter) AS gid
+  FROM regional_sales
+ GROUP BY ROLLUP(channel, quarter)
+ ORDER BY channel, quarter;
+
+/*
+GROUPING_ID Interpretation:
+0 = Detailed channel & quarter row
+1 = Subtotal for the entire channel
+3 = Grand total across all channels and quarters
+*/
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: High-Performance Data Warehouse Synchronization using MERGE
+-- =============================================================================
+-- Production scenario: Atomic upsert updating changed prices, inserting new items,
+-- and conditionally deleting discontinued products.
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE master_inventory CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP TABLE supplier_delta CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE master_inventory (
+    sku          VARCHAR2(20) PRIMARY KEY,
+    item_desc    VARCHAR2(100),
+    unit_price   NUMBER(10, 2),
+    active_flag  CHAR(1) DEFAULT 'Y'
+);
+
+CREATE TABLE supplier_delta (
+    sku          VARCHAR2(20) PRIMARY KEY,
+    item_desc    VARCHAR2(100),
+    unit_price   NUMBER(10, 2),
+    status       VARCHAR2(20)
+);
+
+INSERT INTO master_inventory VALUES ('SKU-100', 'Enterprise Router',  450.00, 'Y');
+INSERT INTO master_inventory VALUES ('SKU-200', 'Cat6 Cable 100m',    35.00,  'Y');
+INSERT INTO master_inventory VALUES ('SKU-300', 'Legacy Modem',       80.00,  'Y');
+
+INSERT INTO supplier_delta VALUES ('SKU-100', 'Enterprise Router v2', 475.00, 'ACTIVE');
+INSERT INTO supplier_delta VALUES ('SKU-300', 'Legacy Modem',         80.00,  'DISCONTINUED');
+INSERT INTO supplier_delta VALUES ('SKU-400', 'Fiber Optic Transceiver', 120.00, 'ACTIVE');
+COMMIT;
+
+MERGE INTO master_inventory tgt
+USING supplier_delta src
+   ON (tgt.sku = src.sku)
+WHEN MATCHED THEN
+    UPDATE SET 
+        tgt.item_desc   = src.item_desc,
+        tgt.unit_price  = src.unit_price
+    DELETE WHERE (src.status = 'DISCONTINUED') -- Oracle-specific conditional delete!
+WHEN NOT MATCHED THEN
+    INSERT (sku, item_desc, unit_price, active_flag)
+    VALUES (src.sku, src.item_desc, src.unit_price, 'Y');
+
+COMMIT;
+
+-- Verification:
+-- SKU-100: Updated to 'Enterprise Router v2' ($475.00)
+-- SKU-200: Retained untouched
+-- SKU-300: Deleted because status = 'DISCONTINUED'
+-- SKU-400: Inserted cleanly
+
+-- =============================================================================
+-- Use Case 2: Lateral Joins (CROSS APPLY) for Top-N Correlated Entities
+-- =============================================================================
+-- For each department, retrieve the top 2 highest-earning employees without 
+-- scanning and partitioning the entire table.
+
+SELECT d.emp_id AS mgr_id,
+       d.name   AS manager_name,
+       sub.name AS staff_name,
+       sub.salary
+  FROM corp_hierarchy d
+ CROSS APPLY (
+     SELECT e.name, e.salary
+       FROM corp_hierarchy e
+      WHERE e.mgr_id = d.emp_id
+      ORDER BY e.salary DESC
+      FETCH FIRST 2 ROWS ONLY
+ ) sub
+ ORDER BY d.emp_id;
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. The Fatal NOT IN with NULL Hazard:
+   - In Oracle SQL, if a subquery produces even a single NULL value, `NOT IN` 
+     evaluates to `UNKNOWN` and returns ZERO records!
+   - Anti-Pattern:
+       SELECT * FROM master_inventory WHERE sku NOT IN (SELECT sku FROM supplier_delta);
+       -- If supplier_delta has 1 row with sku IS NULL, this returns 0 rows!
+   - Production Fix: Always use `NOT EXISTS` which is null-safe and enables the CBO 
+     to use an efficient Hash Anti-Join:
+       SELECT * FROM master_inventory m
+        WHERE NOT EXISTS (SELECT 1 FROM supplier_delta s WHERE s.sku = m.sku);
+
+2. Prefer UNION ALL over UNION:
+   - Unless duplicate elimination is an explicit business requirement, always use 
+     `UNION ALL`.
+   - `UNION ALL` streams rows directly into the client result pipeline. 
+   - `UNION` forces Oracle to perform a `HASH UNIQUE` or `SORT UNIQUE` operation 
+     in the session's PGA/Temp tablespace.
+
+3. Optimizer Hint: Forcing CTE Materialization:
+   - When a CTE is referenced multiple times in complex analytical reporting, prevent 
+     the optimizer from repeatedly re-executing it by hinting:
+       WITH summary_data AS (
+           SELECT /*+ MATERIALIZE */ channel, SUM(revenue) AS rev FROM regional_sales GROUP BY channel
+       )
+       SELECT ... FROM summary_data s1 JOIN summary_data s2 ...;
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
+Oracle Advanced SQL Syntax Reference:
+-------------------------------------
+
+-- 1. Oracle Hierarchical Query:
+SELECT LEVEL, col1, SYS_CONNECT_BY_PATH(col2, '/')
+  FROM tbl
+ START WITH parent_id IS NULL
+CONNECT BY PRIOR id = parent_id
+ ORDER SIBLINGS BY col1;
+
+-- 2. Oracle PIVOT:
+SELECT * FROM src_table
+PIVOT (
+    SUM(numeric_col)
+    FOR pivot_col IN ('VAL1' AS alias1, 'VAL2' AS alias2)
+);
+
+-- 3. Oracle Set Difference:
+SELECT col1 FROM tbl_a
+MINUS  -- Oracle uses MINUS instead of ANSI EXCEPT
+SELECT col1 FROM tbl_b;
+
+-- 4. Oracle MERGE with DELETE:
+MERGE INTO target_table t
+USING source_table s
+   ON (t.key_col = s.key_col)
+WHEN MATCHED THEN
+    UPDATE SET t.val = s.val
+    DELETE WHERE (s.flag = 'DELETE')
+WHEN NOT MATCHED THEN
+    INSERT (key_col, val) VALUES (s.key_col, s.val);
+
+-- 5. Lateral Join (CROSS APPLY):
+SELECT * FROM parent_tbl p
+CROSS APPLY (
+    SELECT * FROM child_tbl c WHERE c.parent_id = p.id FETCH FIRST n ROWS ONLY
+) c_sub;
+================================================================================

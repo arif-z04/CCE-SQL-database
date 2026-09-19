@@ -1,0 +1,318 @@
+================================================================================
+TUTORIAL: ORACLE PL/SQL AFTER TRIGGERS
+Target Filename: AFTER_Triggers.txt
+Target Engine: Oracle Database (11g, 12c, 19c, 21c, 23ai)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TITLE & CONCEPTUAL DEFINITION
+--------------------------------------------------------------------------------
+In Oracle PL/SQL, an AFTER Trigger is a trigger configured to execute immediately 
+AFTER the triggering DML statement (INSERT, UPDATE, DELETE) has modified the target 
+table's data blocks in the Oracle Database Buffer Cache and AFTER all declarative 
+integrity constraints (PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK, NOT NULL) have been 
+validated by the Oracle SQL engine.
+
+Why AFTER Triggers instead of BEFORE Triggers in Oracle:
+- Guaranteed Clean Data: Fires only if the row change passed all constraints. Never 
+  wastes I/O or CPU auditing a row that is immediately rejected by a constraint.
+- Child Table Foreign Keys: Inserting an audit or history log row with a FOREIGN KEY 
+  pointing back to the parent table requires the parent row to already exist in 
+  the data block. A BEFORE INSERT trigger fails; an AFTER INSERT trigger succeeds.
+- Visibility of Auto-Generated Keys: Accessing Oracle Identity columns 
+  (`GENERATED ALWAYS AS IDENTITY`) or sequence defaults (`DEFAULT ON NULL seq.NEXTVAL`) 
+  is fully guaranteed in AFTER triggers.
+- Cascading Systems & Outbox Pattern: Propagating committed state to event tables, 
+  denormalized summary counters, or Oracle Advanced Queuing (AQ) buffers.
+
+Problems it solves:
+- Eliminates "ghost" audit entries caused by operations that subsequently abort due 
+  to downstream constraint violations.
+- Decouples auxiliary integration tasks from core data persistence.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE & INTERNAL EXECUTION
+--------------------------------------------------------------------------------
+
+A. Oracle Execution Pipeline:
+  [Client DML Command]
+         |
+         v
+  [1. Execute BEFORE Triggers]
+         |
+         v
+  [2. Update Database Buffer Cache Blocks & Generate Redo/Undo Vectors]
+         |
+         v
+  [3. Enforce Declarative Constraints (PK, FK, CHECK, NOT NULL)]
+         |
+         +-----> (Constraint Violation: ORA-02290, ORA-00001, ORA-02291 -> Statement Aborts)
+         |
+         v (All Constraints Pass)
+  [4. EXECUTE AFTER ROW TRIGGERS]  <--- :NEW values are strictly READ-ONLY!
+         |
+         v
+  [5. EXECUTE AFTER STATEMENT TRIGGERS]
+
+B. Immutability of :NEW in AFTER Triggers:
+Because Oracle has already updated the underlying table block before the AFTER row 
+trigger executes, the `:NEW` pseudo-record is strictly READ-ONLY.
+- Attempting `:NEW.status := 'APPROVED';` results in Oracle compilation error:
+  `PLS-00363: expression 'NEW.STATUS' cannot be used as an assignment target`.
+
+C. Transaction Boundary and Rollback Cascade:
+An AFTER trigger executes inside the transaction boundary of the triggering statement. 
+If an unhandled exception (`RAISE_APPLICATION_ERROR`) occurs inside an AFTER trigger, 
+Oracle automatically rolls back the entire triggering DML statement and all changes 
+made by preceding triggers in that statement.
+
+
+--------------------------------------------------------------------------------
+3. BASIC TO INTERMEDIATE IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Setup Oracle Schema Objects
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE customer_orders CASCADE CONSTRAINTS';
+    EXECUTE IMMEDIATE 'DROP TABLE order_lifecycle_log CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE customer_orders (
+    order_id      NUMBER(10) GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id   NUMBER(8) NOT NULL,
+    order_date    DATE DEFAULT SYSDATE NOT NULL,
+    order_total   NUMBER(12, 2) DEFAULT 0 CHECK (order_total >= 0),
+    order_status  VARCHAR2(20) DEFAULT 'PENDING'
+                  CONSTRAINT ck_order_status CHECK (order_status IN ('PENDING', 'PROCESSING', 'SHIPPED', 'CANCELLED'))
+);
+
+CREATE TABLE order_lifecycle_log (
+    log_id        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id      NUMBER(10) NOT NULL REFERENCES customer_orders(order_id) ON DELETE CASCADE,
+    previous_state VARCHAR2(20),
+    current_state  VARCHAR2(20) NOT NULL,
+    modified_by    VARCHAR2(50) NOT NULL,
+    modified_at    TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL
+);
+
+-- =============================================================================
+-- Implementation: AFTER UPDATE OF COLUMN with Oracle Predicates
+-- =============================================================================
+CREATE OR REPLACE TRIGGER trg_orders_after_status_change
+AFTER UPDATE OF order_status ON customer_orders
+FOR EACH ROW
+WHEN (OLD.order_status IS NULL OR OLD.order_status != NEW.order_status)
+DECLARE
+    v_user VARCHAR2(50);
+BEGIN
+    v_user := COALESCE(SYS_CONTEXT('USERENV', 'SESSION_USER'), USER);
+
+    -- Insert into history log. Note: foreign key to customer_orders succeeds 
+    -- because the order row is already guaranteed to exist.
+    INSERT INTO order_lifecycle_log (
+        order_id,
+        previous_state,
+        current_state,
+        modified_by,
+        modified_at
+    ) VALUES (
+        :NEW.order_id,
+        :OLD.order_status,
+        :NEW.order_status,
+        v_user,
+        SYSTIMESTAMP
+    );
+END;
+/
+
+-- Verification Script:
+INSERT INTO customer_orders (customer_id, order_total, order_status)
+VALUES (3001, 749.50, 'PENDING');
+COMMIT;
+
+UPDATE customer_orders
+   SET order_status = 'PROCESSING'
+ WHERE customer_id = 3001;
+COMMIT;
+
+-- Query Result:
+-- SELECT order_id, previous_state, current_state, modified_by FROM order_lifecycle_log;
+-- Result:
+-- ORDER_ID | PREVIOUS_STATE | CURRENT_STATE | MODIFIED_BY
+-- 1        | PENDING        | PROCESSING    | NOIR
+
+
+--------------------------------------------------------------------------------
+4. ADVANCED REAL-WORLD USE CASES
+--------------------------------------------------------------------------------
+
+-- =============================================================================
+-- Use Case 1: Real-Time Denormalized Summary Cache Synchronization
+-- =============================================================================
+-- Maintains real-time revenue and order counts in a parent summary table across
+-- INSERT, UPDATE, and DELETE operations.
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE customer_account_summary CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE customer_account_summary (
+    customer_id    NUMBER(8) PRIMARY KEY,
+    lifetime_count NUMBER(8) DEFAULT 0 NOT NULL,
+    lifetime_spend NUMBER(14, 2) DEFAULT 0 NOT NULL
+);
+
+INSERT INTO customer_account_summary VALUES (3001, 1, 749.50);
+COMMIT;
+
+CREATE OR REPLACE TRIGGER trg_orders_sync_summary
+AFTER INSERT OR UPDATE OF order_total, customer_id OR DELETE ON customer_orders
+FOR EACH ROW
+BEGIN
+    -- 1. On DELETE: Decrement old customer metrics
+    IF DELETING THEN
+        UPDATE customer_account_summary
+           SET lifetime_count = lifetime_count - 1,
+               lifetime_spend = lifetime_spend - :OLD.order_total
+         WHERE customer_id = :OLD.customer_id;
+
+    -- 2. On INSERT: Increment new customer metrics
+    ELSIF INSERTING THEN
+        UPDATE customer_account_summary
+           SET lifetime_count = lifetime_count + 1,
+               lifetime_spend = lifetime_spend + :NEW.order_total
+         WHERE customer_id = :NEW.customer_id;
+
+    -- 3. On UPDATE: Handle value deltas and customer re-assignments
+    ELSIF UPDATING THEN
+        IF :OLD.customer_id = :NEW.customer_id THEN
+            UPDATE customer_account_summary
+               SET lifetime_spend = lifetime_spend + (:NEW.order_total - :OLD.order_total)
+             WHERE customer_id = :NEW.customer_id;
+        ELSE
+            UPDATE customer_account_summary
+               SET lifetime_count = lifetime_count - 1,
+                   lifetime_spend = lifetime_spend - :OLD.order_total
+             WHERE customer_id = :OLD.customer_id;
+
+            UPDATE customer_account_summary
+               SET lifetime_count = lifetime_count + 1,
+                   lifetime_spend = lifetime_spend + :NEW.order_total
+             WHERE customer_id = :NEW.customer_id;
+        END IF;
+    END IF;
+END;
+/
+
+-- =============================================================================
+-- Use Case 2: Enterprise Transactional Outbox Pattern via JSON Generation
+-- =============================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE integration_events_outbox CASCADE CONSTRAINTS';
+EXCEPTION
+    WHEN OTHERS THEN IF SQLCODE != -942 THEN RAISE; END IF;
+END;
+/
+
+CREATE TABLE integration_events_outbox (
+    event_id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    aggregate_key VARCHAR2(50) NOT NULL,
+    event_name    VARCHAR2(50) NOT NULL,
+    payload_json  VARCHAR2(4000) CHECK (payload_json IS JSON),
+    created_at    TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+    dispatched    CHAR(1) DEFAULT 'N' CHECK (dispatched IN ('Y', 'N'))
+);
+
+CREATE OR REPLACE TRIGGER trg_orders_outbox_event
+AFTER INSERT OR UPDATE ON customer_orders
+FOR EACH ROW
+DECLARE
+    v_event VARCHAR2(50);
+    v_json  VARCHAR2(4000);
+BEGIN
+    IF INSERTING THEN
+        v_event := 'ORDER_PLACED';
+    ELSIF UPDATING THEN
+        v_event := 'ORDER_MODIFIED';
+    END IF;
+
+    -- Generate Oracle native JSON payload
+    SELECT JSON_OBJECT(
+               'order_id'    VALUE :NEW.order_id,
+               'customer_id' VALUE :NEW.customer_id,
+               'order_total' VALUE :NEW.order_total,
+               'status'      VALUE :NEW.order_status,
+               'session_id'  VALUE SYS_CONTEXT('USERENV', 'SID')
+           )
+      INTO v_json
+      FROM DUAL;
+
+    INSERT INTO integration_events_outbox (aggregate_key, event_name, payload_json)
+    VALUES (TO_CHAR(:NEW.order_id), v_event, v_json);
+END;
+/
+
+
+--------------------------------------------------------------------------------
+5. USEFUL TRICKS & PERFORMANCE OPTIMIZATION
+--------------------------------------------------------------------------------
+1. Granular Firing with UPDATE OF <columns>:
+   - Anti-Pattern: `AFTER UPDATE ON customer_orders` -> Fires when unrelated columns 
+     (e.g., internal flags) are modified.
+   - Best Practice: `AFTER UPDATE OF order_status, order_total ON customer_orders` 
+     restricts trigger evaluation strictly to business-critical columns.
+
+2. Concurrency Serialization Warning on Summary Tables:
+   - Having an AFTER ROW trigger update a single shared counter row in a high-concurrency 
+     OLTP application causes TX Row Lock contention (`enq: TX - row lock contention`).
+   - Alternative: In heavy OLTP databases, use Oracle Materialized Views with FAST 
+     REFRESH ON COMMIT or stream deltas into append-only staging tables.
+
+3. Ordering Multiple AFTER Triggers with FOLLOWS (Oracle 11g+):
+   - When multiple AFTER triggers exist on the same table and event:
+       CREATE OR REPLACE TRIGGER trg_orders_step_two
+       AFTER INSERT ON customer_orders
+       FOR EACH ROW
+       FOLLOWS trg_orders_step_one
+       BEGIN ... END;
+
+
+--------------------------------------------------------------------------------
+6. QUICK REFERENCE / SYNTAX CHEAT SHEET
+--------------------------------------------------------------------------------
+Oracle AFTER Trigger Syntax:
+----------------------------
+CREATE OR REPLACE TRIGGER trigger_name
+AFTER {INSERT | UPDATE [OF col1, col2] | DELETE} [OR ...]
+ON table_name
+[FOR EACH ROW]
+[WHEN (condition)]
+DECLARE
+    -- Local variables
+BEGIN
+    IF INSERTING THEN
+        -- :NEW is available (Read-Only)
+    ELSIF UPDATING('col_name') THEN
+        -- :OLD and :NEW are available (Read-Only)
+    ELSIF DELETING THEN
+        -- :OLD is available (Read-Only)
+    END IF;
+END;
+/
+
+Key Rules:
+----------
+- :NEW in AFTER row triggers: ALWAYS READ-ONLY (PLS-00363 on assignment).
+- :OLD in AFTER row triggers: ALWAYS READ-ONLY.
+- Foreign Key Safety: Guaranteed valid for child tables pointing to parent table.
+- Commit / Rollback: Prohibited inside trigger body unless PRAGMA AUTONOMOUS_TRANSACTION.
+================================================================================
