@@ -1,0 +1,323 @@
+================================================================================
+          COMPLETE GUIDE: HOW TO INSERT DATA IN ORACLE SQL*PLUS
+================================================================================
+A practical, step-by-step handbook covering single-row, multi-row, interactive,
+script-based, date-handling, and procedural insertions in Oracle SQL*Plus.
+================================================================================
+
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+ 1. Environment Setup & Useful SQL*Plus Settings
+ 2. The Golden Rule of Oracle: COMMIT & Transaction Control
+ 3. Method 1: Basic Single-Row INSERT
+ 4. Method 2: Multi-Row INSERT (The Universal Oracle Way: INSERT ALL)
+ 5. Method 3: Running External Script Files (@ and START)
+ 6. Method 4: Interactive Prompts using Substitution Variables (& and /)
+ 7. Method 5: Handling Dates, Timestamps & NULL Values
+ 8. Method 6: Insert from Another Table (INSERT INTO ... SELECT)
+ 9. Method 7: Programmatic Inserts using PL/SQL Blocks
+10. SQL*Plus Buffer Editing & Helpful Tricks (ED, LIST, CHANGE, /)
+11. Common Oracle INSERT Errors & Instant Fixes
+
+
+================================================================================
+1. ENVIRONMENT SETUP & USEFUL SQL*PLUS SETTINGS
+================================================================================
+
+Before running queries, configure your SQL*Plus session for clean output:
+
+-- 1. Connect to Oracle via SQL*Plus:
+   sqlplus username/password@hostname:port/service_name
+   Example (Local Oracle 23ai / 21c / 19c / XE):
+   sqlplus system/oracle@localhost:1521/FREEPDB1
+   or simply:
+   sqlplus
+
+-- 2. Windows terminal UTF-8 character encoding fix (if needed for Bangla/Unicode):
+   cmd> chcp 65001
+   cmd> set NLS_LANG=.AL32UTF8
+   cmd> sqlplus
+
+-- 3. Recommended session configuration commands inside SQL*Plus:
+   SQL> SET SERVEROUTPUT ON;      -- Enables DBMS_OUTPUT console messages
+   SQL> SET FEEDBACK ON;          -- Displays '1 row created.' confirmation
+   SQL> SET LINESIZE 150;         -- Prevents wide tables from wrapping lines
+   SQL> SET PAGESIZE 100;         -- Prevents headers from repeating too often
+   SQL> SET VERIFY OFF;           -- Suppresses 'old/new' display in & substitutions
+
+
+================================================================================
+2. THE GOLDEN RULE OF ORACLE: COMMIT & TRANSACTION CONTROL
+================================================================================
+
+CRITICAL DIFFERENCE:
+Unlike MySQL or SQLite, Oracle Database DOES NOT autocommit DML statements by default!
+
+If you insert data and exit SQL*Plus without committing, or if your session crashes,
+or if another user/application connects, the inserted records WILL NOT BE VISIBLE
+or WILL BE LOST permanently.
+
+Always issue COMMIT after your insert operations:
+
+    SQL> INSERT INTO EMPLOYEE VALUES (101, 'Rahim', 30000);
+    1 row created.
+
+    SQL> COMMIT;
+    Commit complete.
+
+To cancel all uncommitted changes in the current session:
+    SQL> ROLLBACK;
+    Rollback complete.
+
+To enable automatic commit for each statement (optional, like MySQL):
+    SQL> SET AUTOCOMMIT ON;
+To disable automatic commit (Oracle standard):
+    SQL> SET AUTOCOMMIT OFF;
+
+
+================================================================================
+3. METHOD 1: BASIC SINGLE-ROW INSERT
+================================================================================
+
+A. Specifying Column Names (Best Practice):
+   Guarantees safety even if table structure changes or columns are reordered.
+
+   SQL> INSERT INTO Employees1 (ID, NAME, DEPARTMENT, SALARY)
+     2  VALUES (101, 'Rahim Islam', 'IT', 50000);
+   1 row created.
+
+B. Positional Insert (Omitting Column Names):
+   Values must match the exact number, order, and datatypes of table columns.
+
+   SQL> INSERT INTO Employees1 VALUES (102, 'Karim Hassan', 'IT', 50000);
+   1 row created.
+
+C. Multi-Line SQL*Plus Behavior:
+   - When you press ENTER without a semicolon, SQL*Plus gives a line number (2, 3, etc.).
+   - Terminate the statement with a semicolon (;) and press ENTER to execute.
+   - Example:
+     SQL> INSERT INTO DEPARTMENTS (dept_id, dept_name)
+       2  VALUES (10, 'Administration');
+     1 row created.
+
+
+================================================================================
+4. METHOD 2: MULTI-ROW INSERT (UNIVERSAL ORACLE METHOD)
+================================================================================
+
+NOTE: Standard SQL syntax `VALUES (1, 'A'), (2, 'B')` fails in Oracle versions
+prior to 23ai with "ORA-00933: SQL command not properly ended".
+
+Universal Oracle Multi-Row Insert using INSERT ALL:
+Works across ALL Oracle versions (11g, 12c, 19c, 21c, 23ai):
+
+SQL> INSERT ALL
+  2      INTO EMPLOYEE (emp_id, name, salary) VALUES (101, 'Rahim', 30000)
+  3      INTO EMPLOYEE (emp_id, name, salary) VALUES (102, 'Karim', 35000)
+  4      INTO EMPLOYEE (emp_id, name, salary) VALUES (103, 'Hasan', 40000)
+  5      INTO EMPLOYEE (emp_id, name, salary) VALUES (104, 'Jamal', 45000)
+  6      INTO EMPLOYEE (emp_id, name, salary) VALUES (105, 'Sakib', 50000)
+  7  SELECT * FROM dual;
+5 rows created.
+
+SQL> COMMIT;
+Commit complete.
+
+In Oracle 23ai+:
+Standard comma-separated VALUES are also supported:
+SQL> INSERT INTO EMPLOYEE (emp_id, name, salary) VALUES
+  2  (106, 'Tanvir', 42000),
+  3  (107, 'Rony', 38000);
+2 rows created.
+
+
+================================================================================
+5. METHOD 3: RUNNING EXTERNAL SCRIPT FILES (@ AND START)
+================================================================================
+
+To execute large seed scripts (like SEED_data.sql or DDL.sql):
+
+A. Using @ from within SQL*Plus:
+   SQL> @SEED_data.sql
+   or with full absolute path:
+   SQL> @"/home/noir/Work/Database/Oracle_part_Class_works/Database_Insert/SEED_data.sql"
+   SQL> @"C:\Users\Lenovo\Documents\SEED_data.sql"
+
+B. Using START command:
+   SQL> START SEED_data.sql
+
+C. Executing directly from the OS Terminal (Non-interactive / Batch mode):
+   Linux / macOS:
+   sqlplus -s username/password@service_name @SEED_data.sql
+
+   Windows:
+   sqlplus system/oracle@localhost:1521/FREEPDB1 @SEED_data.sql
+
+
+================================================================================
+6. METHOD 4: INTERACTIVE PROMPTS USING SUBSTITUTION VARIABLES (& AND /)
+================================================================================
+
+SQL*Plus allows dynamic interactive data entry from the console using `&variable`:
+
+A. Creating an interactive template statement:
+   SQL> INSERT INTO EMPLOYEE (emp_id, name, salary)
+     2  VALUES (&emp_id, '&name', &salary);
+
+   Notice: String/character inputs must be enclosed in quotes: '&name'.
+
+B. Execution Trace in SQL*Plus:
+   Enter value for emp_id: 106
+   Enter value for name: Rony
+   Enter value for salary: 32000
+   1 row created.
+
+C. Rapid Repeating with the Slash ( / ) Command:
+   To insert another record immediately without retyping the query, just type `/`!
+   
+   SQL> /
+   Enter value for emp_id: 107
+   Enter value for name: Farhan
+   Enter value for salary: 38000
+   1 row created.
+
+   SQL> /
+   Enter value for emp_id: 108
+   Enter value for name: Sumon
+   Enter value for salary: 41000
+   1 row created.
+
+   SQL> COMMIT;
+   Commit complete.
+
+
+================================================================================
+7. METHOD 5: HANDLING DATES, TIMESTAMPS & NULL VALUES
+================================================================================
+
+A. Current System Date / Time:
+   Use `SYSDATE` for DATE and `CURRENT_TIMESTAMP` for TIMESTAMP:
+
+   SQL> INSERT INTO SALARY_LOG (emp_id, old_salary, new_salary, change_date)
+     2  VALUES (101, 30000, 35000, SYSDATE);
+
+B. Explicit Date Formatting with TO_DATE:
+   Always use `TO_DATE` to avoid NLS_DATE_FORMAT dependency errors:
+
+   SQL> INSERT INTO STUDENT_LOG (student_id, name, log_date)
+     2  VALUES (101, 'Arif', TO_DATE('2026-09-20', 'YYYY-MM-DD'));
+
+   With hours, minutes, seconds:
+   SQL> INSERT INTO STUDENT_LOG (student_id, name, log_date)
+     2  VALUES (102, 'Rahim', TO_DATE('20/09/2026 14:30:00', 'DD/MM/YYYY HH24:MI:SS'));
+
+C. Inserting Explicit NULLs:
+   SQL> INSERT INTO EMPLOYEES (emp_id, emp_name, salary, dept_id, manager_id)
+     2  VALUES (101, 'Rahim Chowdhury', 120000.00, 10, NULL);
+
+
+================================================================================
+8. METHOD 6: INSERT FROM ANOTHER TABLE (INSERT INTO ... SELECT)
+================================================================================
+
+Useful for copying data, creating backups, or ETL operations:
+
+A. Insert all records matching a condition:
+   SQL> INSERT INTO EMPLOYEE (emp_id, name, salary)
+     2  SELECT emp_id, emp_name, salary
+     3  FROM EMPLOYEES
+     4  WHERE dept_id = 20;
+
+B. Insert with calculated / transformed values:
+   SQL> INSERT INTO SALARY_LOG (emp_id, old_salary, new_salary, change_date)
+     2  SELECT emp_id, salary, salary * 1.10, SYSDATE
+     3  FROM EMPLOYEES
+     4  WHERE salary < 50000;
+
+
+================================================================================
+9. METHOD 7: PROGRAMMATIC INSERTS USING PL/SQL BLOCKS
+================================================================================
+
+When you need loops, conditionals, or sequences during data insertion:
+
+SQL> BEGIN
+  2      FOR i IN 1..5 LOOP
+  3          INSERT INTO STUDENT (student_id, name, age)
+  4          VALUES (200 + i, 'Batch Student ' || i, 20 + i);
+  5      END LOOP;
+  6      COMMIT;
+  7  END;
+  8  /
+PL/SQL procedure successfully completed.
+
+Notice:
+- PL/SQL blocks terminate with a forward slash (`/`) on a new line, NOT a semicolon.
+
+
+================================================================================
+10. SQL*PLUS BUFFER EDITING & HELPFUL TRICKS
+================================================================================
+
+SQL*Plus holds the last executed SQL statement in an internal memory buffer.
+
+- `L` or `LIST`
+  Displays the current statement in the buffer with line numbers.
+  
+- `LIST n`
+  Shows line number `n` of the buffer.
+
+- `C /old/new` (CHANGE command)
+  Substitutes text in the current buffer line without retyping.
+  Example:
+  SQL> LIST
+    1* INSERT INTO EMPLOYEE VALUES (101, 'Rahim', 3000)
+  SQL> C /3000/30000/
+    1* INSERT INTO EMPLOYEE VALUES (101, 'Rahim', 30000)
+
+- `ED` or `EDIT`
+  Opens the SQL statement in your OS default editor (Notepad on Windows, Vim/Nano on Linux).
+  Save and close the editor; SQL*Plus will immediately reload the updated buffer.
+
+- `/` (Slash)
+  Executes the current buffer immediately.
+
+- `R` or `RUN`
+  Displays the buffer contents and then executes it.
+
+
+================================================================================
+11. COMMON ORACLE INSERT ERRORS & INSTANT FIXES
+================================================================================
+
+1. ORA-00001: unique constraint (...) violated
+   Cause: Attempted to insert a duplicate value for a Primary Key or UNIQUE column.
+   Fix: Check existing keys (`SELECT * FROM table;`) and use an unused ID.
+
+2. ORA-02291: integrity constraint (...) violated - parent key not found
+   Cause: Foreign Key references a parent row that does not exist.
+   Fix: Insert the parent record first (e.g. insert into DEPARTMENTS before EMPLOYEES).
+
+3. ORA-01400: cannot insert NULL into (...)
+   Cause: A column with NOT NULL constraint was omitted or passed NULL.
+   Fix: Provide a non-null value for that column.
+
+4. ORA-12899: value too large for column "TABLE"."COL" (actual: X, maximum: Y)
+   Cause: String exceeds the declared VARCHAR2 length.
+   Fix: Shorten the string or increase column length with ALTER TABLE.
+
+5. ORA-00947: not enough values
+   Cause: Positional INSERT provided fewer values than the table has columns.
+   Fix: Provide values for all columns or specify the column list explicitly.
+
+6. ORA-00913: too many values
+   Cause: Positional INSERT provided more values than columns defined.
+   Fix: Check table definition with `DESCRIBE table_name;`.
+
+7. ORA-00933: SQL command not properly ended
+   Cause: Usually using MySQL-style comma-separated multi-row VALUES in older Oracle.
+   Fix: Use `INSERT ALL ... SELECT * FROM dual;`.
+
+================================================================================
+END OF GUIDE
+================================================================================
