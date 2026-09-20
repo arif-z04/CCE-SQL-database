@@ -209,6 +209,15 @@ BEGIN
 END;
 /
 
+-- 7. Console Notification on Employee Insert (4. INSERT Trigger.txt)
+CREATE OR REPLACE TRIGGER trg_insert_emp
+AFTER INSERT ON EMPLOYEE
+FOR EACH ROW
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('New employee inserted: ' || :NEW.name);
+END;
+/
+
 -- =============================================================================
 -- END OF DDL.sql
 -- =============================================================================
