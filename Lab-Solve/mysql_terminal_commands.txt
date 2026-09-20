@@ -1,0 +1,993 @@
+================================================================================
+              MYSQL DBMS TERMINAL COMMANDS COMPREHENSIVE GUIDE
+================================================================================
+A complete reference guide for MySQL CLI / Terminal commands, client meta-commands,
+Data Definition (DDL), Data Manipulation (DML), Data Query (DQL), Data Control (DCL),
+Transaction Control (TCL), Administration, Import/Export, and Troubleshooting.
+================================================================================
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+ 1. MySQL Command-Line Client Invocation (Shell / Bash Level)
+ 2. Interactive MySQL Terminal Meta-Commands (Client Built-ins)
+ 3. Database Management Commands (DDL)
+ 4. Table Management Commands (DDL)
+ 5. Table Alteration Commands (ALTER TABLE)
+ 6. Index & Constraint Management
+ 7. Data Manipulation Language (DML)
+ 8. Data Query Language (DQL) & Filtering
+ 9. Joins, Set Operations & Aggregations
+10. Window Functions & Common Table Expressions (CTEs)
+11. View Management
+12. Stored Procedures and User-Defined Functions
+13. Trigger Management
+14. Transaction Control Language (TCL) & Locking
+15. User Management & Privilege Control (DCL)
+16. Data Import, Export & Backup / Restore
+17. Server Status, Performance & Diagnostics
+18. Key Built-In Functions (String, Numeric, Date, Control Flow)
+19. Essential Tips & Keyboard Shortcuts in MySQL Terminal
+
+
+================================================================================
+1. MYSQL COMMAND-LINE CLIENT INVOCATION (SHELL / BASH LEVEL)
+================================================================================
+Run these commands in your Linux/macOS/Windows terminal shell (bash, zsh, etc.)
+before entering the interactive MySQL prompt.
+
+-- Connect to local MySQL server as user (prompts for password):
+mysql -u <username> -p
+Example: mysql -u root -p
+
+-- Connect to a remote MySQL host and custom port:
+mysql -h <hostname_or_ip> -P <port> -u <username> -p
+Example: mysql -h 127.0.0.1 -P 3306 -u root -p
+
+-- Connect directly into a specific database:
+mysql -u <username> -p <database_name>
+Example: mysql -u root -p university_db
+
+-- Connect specifying default character set:
+mysql -u <username> -p --default-character-set=utf8mb4 <database_name>
+
+-- Execute an inline SQL statement and return directly to bash:
+mysql -u <username> -p -e "SELECT User, Host FROM mysql.user;"
+mysql -u <username> -p <database_name> -e "SHOW TABLES; SELECT COUNT(*) FROM student;"
+
+-- Execute a SQL script file from bash (Batch / Non-interactive mode):
+mysql -u <username> -p <database_name> < /path/to/script.sql
+
+-- Print query output in tab-separated (batch) format:
+mysql -u <username> -p -B -e "SELECT * FROM department;" university_db
+
+-- Print query output in HTML or XML format:
+mysql -u <username> -p -H -e "SELECT * FROM instructor;" university_db
+mysql -u <username> -p -X -e "SELECT * FROM instructor;" university_db
+
+-- Check MySQL client version from bash:
+mysql --version
+
+
+================================================================================
+2. INTERACTIVE MYSQL TERMINAL META-COMMANDS (CLIENT BUILT-INS)
+================================================================================
+These commands are evaluated directly by the MySQL client shell. Most can be
+executed with or without a terminating semicolon.
+
+\?  or  \h  or  help
+    Display list of all MySQL terminal client commands and usage.
+
+\c  or  clear
+    Clear the current input statement. Useful when you made a typo or want
+    to abort an unfinished multi-line query without executing it.
+    Example:
+    mysql> SELECT * FROM very_large_table WHERE id = 10 \c
+    mysql>
+
+\q  or  exit  or  quit
+    Exit the MySQL terminal prompt back to the host shell.
+
+\g
+    Send command to MySQL server to execute (identical to semicolon ';').
+
+\G
+    Send command to MySQL server and display results vertically (column by column).
+    Extremely useful in terminal when rows have many columns that wrap awkwardly.
+    Example:
+    SELECT * FROM instructor WHERE ID = '10101'\G
+
+\s  or  status
+    Display server and connection status (version, connection ID, current db,
+    character sets, uptime, threads, TCP port, UNIX socket).
+
+\. <filename>  or  source <filename>
+    Execute an external SQL script file from within the MySQL prompt.
+    Example:
+    source /home/noir/Work/Database/MySQL-database/DDL-main.sql;
+    \. /home/noir/Work/Database/SEED_data.sql;
+
+\! <shell_command>  or  system <shell_command>
+    Execute a host OS shell command without leaving MySQL.
+    Example:
+    \! ls -lh
+    \! pwd
+    \! clear
+
+\T <filename>  or  tee <filename>
+    Log all queries and their corresponding outputs into a specified text file.
+    Example:
+    tee /home/noir/Work/Database/Lab-Solve/session_log.txt;
+
+\t  or  notee
+    Stop logging output to the tee file.
+
+\u <database_name>  or  use <database_name>
+    Select/switch the active working database.
+    Example:
+    use university_db;
+
+\d <delimiter>  or  delimiter <delimiter>
+    Change the statement delimiter (critical when creating triggers, procedures,
+    or functions that contain semicolons).
+    Example:
+    delimiter //
+    delimiter ;
+
+\r  or  connect [<db_name> [<host_name>]]
+    Reconnect to the MySQL server without restarting the client session.
+
+\#  or  rehash
+    Rebuild the auto-completion hash table for database, table, and column names.
+
+\W  or  warnings
+    Automatically show server warnings after every query execution.
+
+\w  or  nowarning
+    Turn off automatic display of warnings.
+
+\P <pager_cmd>  or  pager <pager_cmd>
+    Pipe query output through a system pager program (e.g., less, more, cat, grep).
+    Example:
+    pager less -SFX
+    pager grep -i "physics"
+
+\p  or  nopager
+    Disable the pager and restore default terminal stdout.
+
+\e  or  edit
+    Open the system's default text editor ($EDITOR / vim / nano) to edit
+    the last entered multi-line SQL statement.
+
+
+================================================================================
+3. DATABASE MANAGEMENT COMMANDS (DDL)
+================================================================================
+
+-- List all databases on the server:
+SHOW DATABASES;
+SHOW SCHEMAS;
+
+-- List databases matching a regex pattern:
+SHOW DATABASES LIKE 'univ%';
+
+-- Create a new database:
+CREATE DATABASE university_db;
+
+-- Create database only if it does not already exist:
+CREATE DATABASE IF NOT EXISTS university_db;
+
+-- Create database specifying character set and collation:
+CREATE DATABASE university_db
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+-- Switch to a database:
+USE university_db;
+
+-- Display currently active database name:
+SELECT DATABASE();
+
+-- Show the DDL command used to create a database:
+SHOW CREATE DATABASE university_db;
+
+-- Alter existing database default character set:
+ALTER DATABASE university_db CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+-- Drop (delete) a database and all its tables permanently:
+DROP DATABASE university_db;
+DROP DATABASE IF EXISTS university_db;
+
+
+================================================================================
+4. TABLE MANAGEMENT COMMANDS (DDL)
+================================================================================
+
+-- List all tables in current database:
+SHOW TABLES;
+
+-- List all tables including table type (BASE TABLE vs VIEW):
+SHOW FULL TABLES;
+
+-- Filter tables by pattern:
+SHOW TABLES LIKE 'stud%';
+
+-- Create a new table with standard column constraints:
+CREATE TABLE IF NOT EXISTS department (
+    dept_name   VARCHAR(20) NOT NULL,
+    building    VARCHAR(15),
+    budget      NUMERIC(12, 2) DEFAULT 0.00,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_department PRIMARY KEY (dept_name),
+    CONSTRAINT chk_budget CHECK (budget >= 0)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+-- Create table with Foreign Key references:
+CREATE TABLE IF NOT EXISTS instructor (
+    ID          VARCHAR(5) NOT NULL,
+    name        VARCHAR(20) NOT NULL,
+    dept_name   VARCHAR(20),
+    salary      NUMERIC(8, 2),
+    PRIMARY KEY (ID),
+    FOREIGN KEY (dept_name) REFERENCES department(dept_name)
+        ON DELETE SET NULL
+        ON UPDATE CASCADE
+) ENGINE = InnoDB;
+
+-- Create a temporary table (lives only for current MySQL session):
+CREATE TEMPORARY TABLE temp_top_students (
+    student_id VARCHAR(5) PRIMARY KEY,
+    gpa NUMERIC(3, 2)
+);
+
+-- Copy structure only of an existing table:
+CREATE TABLE student_backup LIKE student;
+
+-- Copy structure and data using CTAS (Create Table As Select):
+CREATE TABLE instructor_cse AS
+SELECT * FROM instructor WHERE dept_name = 'Comp. Sci.';
+
+-- View table schema / column definitions:
+DESCRIBE instructor;
+DESC instructor;
+EXPLAIN instructor;
+SHOW COLUMNS FROM instructor;
+
+-- View column definitions with extra info (privileges, comments):
+SHOW FULL COLUMNS FROM instructor;
+
+-- View exact CREATE TABLE statement for a table:
+SHOW CREATE TABLE instructor\G
+
+-- View table storage engine, row count, size, and status:
+SHOW TABLE STATUS LIKE 'instructor'\G
+
+-- Rename a table:
+RENAME TABLE student_backup TO student_archive;
+
+-- Empty a table (deletes all records and resets AUTO_INCREMENT):
+TRUNCATE TABLE student_archive;
+
+-- Drop (delete) a table:
+DROP TABLE student_archive;
+DROP TABLE IF EXISTS student_archive;
+
+
+================================================================================
+5. TABLE ALTERATION COMMANDS (ALTER TABLE)
+================================================================================
+
+-- Add a new column to a table:
+ALTER TABLE student ADD email VARCHAR(50);
+
+-- Add a new column at the first position:
+ALTER TABLE student ADD roll_no INT FIRST;
+
+-- Add a new column after an existing column:
+ALTER TABLE student ADD middle_name VARCHAR(20) AFTER name;
+
+-- Drop an existing column:
+ALTER TABLE student DROP COLUMN middle_name;
+
+-- Modify column data type or constraints (keeps column name):
+ALTER TABLE student MODIFY COLUMN email VARCHAR(100) NOT NULL;
+
+-- Rename a column and change its data type simultaneously:
+ALTER TABLE student CHANGE COLUMN tot_cred total_credits INT DEFAULT 0;
+
+-- Rename only column (MySQL 8.0+):
+ALTER TABLE student RENAME COLUMN total_credits TO tot_cred;
+
+-- Set or drop default value for a column:
+ALTER TABLE student ALTER COLUMN tot_cred SET DEFAULT 0;
+ALTER TABLE student ALTER COLUMN tot_cred DROP DEFAULT;
+
+-- Add Primary Key to an existing table:
+ALTER TABLE takes ADD PRIMARY KEY (ID, course_id, sec_id, semester, year);
+
+-- Drop Primary Key:
+ALTER TABLE takes DROP PRIMARY KEY;
+
+-- Add Unique constraint:
+ALTER TABLE student ADD CONSTRAINT uq_student_email UNIQUE (email);
+
+-- Drop Unique constraint or index:
+ALTER TABLE student DROP INDEX uq_student_email;
+
+-- Add Foreign Key constraint:
+ALTER TABLE takes
+    ADD CONSTRAINT fk_takes_student
+    FOREIGN KEY (ID) REFERENCES student(ID)
+    ON DELETE CASCADE;
+
+-- Drop Foreign Key constraint:
+ALTER TABLE takes DROP FOREIGN KEY fk_takes_student;
+
+-- Reset or modify AUTO_INCREMENT start value:
+ALTER TABLE student AUTO_INCREMENT = 1000;
+
+-- Convert table storage engine:
+ALTER TABLE student ENGINE = InnoDB;
+
+
+================================================================================
+6. INDEX & CONSTRAINT MANAGEMENT
+================================================================================
+
+-- View all indexes defined on a table:
+SHOW INDEX FROM student\G
+SHOW KEYS FROM student;
+
+-- Create standard non-unique B-tree index on a column:
+CREATE INDEX idx_student_name ON student (name);
+
+-- Create composite index on multiple columns:
+CREATE INDEX idx_takes_lookup ON takes (course_id, semester, year);
+
+-- Create unique index:
+CREATE UNIQUE INDEX idx_dept_building ON department (building, dept_name);
+
+-- Drop an index:
+DROP INDEX idx_student_name ON student;
+ALTER TABLE student DROP INDEX idx_student_name;
+
+
+================================================================================
+7. DATA MANIPULATION LANGUAGE (DML)
+================================================================================
+
+-- Insert a single record specifying column names:
+INSERT INTO department (dept_name, building, budget)
+VALUES ('Comp. Sci.', 'Taylor', 100000);
+
+-- Insert multiple records in a single query:
+INSERT INTO department (dept_name, building, budget) VALUES
+('Biology', 'Watson', 90000),
+('Physics', 'Watson', 70000),
+('Music', 'Packard', 80000);
+
+-- Insert record allowing defaults for unspecified columns:
+INSERT INTO student (ID, name, dept_name)
+VALUES ('12345', 'Alice Smith', 'Comp. Sci.');
+
+-- Insert rows selected from another table:
+INSERT INTO student_backup (ID, name, dept_name, tot_cred)
+SELECT ID, name, dept_name, tot_cred FROM student WHERE dept_name = 'Physics';
+
+-- Insert or ignore duplicate key errors:
+INSERT IGNORE INTO student (ID, name, dept_name, tot_cred)
+VALUES ('12345', 'Alice S.', 'Comp. Sci.', 30);
+
+-- Upsert: Insert or update existing row on primary/unique key clash:
+INSERT INTO instructor (ID, name, dept_name, salary)
+VALUES ('10101', 'Srinivasan', 'Comp. Sci.', 68000)
+ON DUPLICATE KEY UPDATE salary = 68000;
+
+-- Replace Into (deletes conflicting row and inserts new one):
+REPLACE INTO instructor (ID, name, dept_name, salary)
+VALUES ('10101', 'Srinivasan', 'Comp. Sci.', 69000);
+
+-- Update records:
+UPDATE instructor
+SET salary = salary * 1.05
+WHERE dept_name = 'Comp. Sci.';
+
+-- Update multiple columns:
+UPDATE student
+SET dept_name = 'Comp. Sci.', tot_cred = tot_cred + 3
+WHERE ID = '12345';
+
+-- Delete records:
+DELETE FROM instructor
+WHERE salary < 40000;
+
+-- Delete all records from table (without dropping table structure):
+DELETE FROM student_backup;
+
+
+================================================================================
+8. DATA QUERY LANGUAGE (DQL) & FILTERING
+================================================================================
+
+-- Select all columns and all rows:
+SELECT * FROM instructor;
+
+-- Select specific columns:
+SELECT ID, name, salary FROM instructor;
+
+-- Aliasing columns and tables:
+SELECT name AS instructor_name, salary * 12 AS annual_salary
+FROM instructor AS inst;
+
+-- Filter with distinct unique rows:
+SELECT DISTINCT dept_name FROM instructor;
+
+-- Filtering rows with WHERE conditions:
+SELECT * FROM instructor WHERE salary > 70000;
+SELECT * FROM instructor WHERE dept_name = 'Comp. Sci.' AND salary > 70000;
+SELECT * FROM instructor WHERE dept_name = 'Physics' OR dept_name = 'Music';
+SELECT * FROM instructor WHERE NOT (salary >= 50000);
+
+-- Range search:
+SELECT * FROM instructor WHERE salary BETWEEN 60000 AND 90000;
+
+-- Membership search:
+SELECT * FROM instructor WHERE dept_name IN ('Comp. Sci.', 'Physics', 'Finance');
+SELECT * FROM instructor WHERE dept_name NOT IN ('Music', 'History');
+
+-- Pattern matching (LIKE):
+-- '%' matches 0 or more characters, '_' matches exactly one character:
+SELECT * FROM instructor WHERE name LIKE 'S%';      -- starts with S
+SELECT * FROM instructor WHERE name LIKE '%son';    -- ends with son
+SELECT * FROM instructor WHERE name LIKE '%an%';    -- contains an
+SELECT * FROM instructor WHERE name LIKE '___';     -- exactly 3 chars
+
+-- Case-sensitive or regex search:
+SELECT * FROM instructor WHERE name REGEXP '^[A-M]';
+
+-- Checking for NULL values:
+SELECT * FROM instructor WHERE dept_name IS NULL;
+SELECT * FROM instructor WHERE dept_name IS NOT NULL;
+
+-- Sorting results (ORDER BY):
+SELECT * FROM instructor ORDER BY salary ASC;
+SELECT * FROM instructor ORDER BY salary DESC;
+SELECT * FROM instructor ORDER BY dept_name ASC, salary DESC;
+
+-- Limiting results and pagination:
+SELECT * FROM instructor ORDER BY salary DESC LIMIT 5;            -- Top 5 highest paid
+SELECT * FROM instructor ORDER BY salary DESC LIMIT 5, 5;         -- Skip 5, return next 5
+SELECT * FROM instructor ORDER BY salary DESC LIMIT 5 OFFSET 10;  -- Page 3 (10 offset)
+
+
+================================================================================
+9. JOINS, SET OPERATIONS & AGGREGATIONS
+================================================================================
+
+-- Inner Join:
+SELECT instructor.ID, instructor.name, department.building
+FROM instructor
+INNER JOIN department ON instructor.dept_name = department.dept_name;
+
+-- Left Outer Join (all instructors, matching teaches records or NULL):
+SELECT instructor.ID, instructor.name, teaches.course_id
+FROM instructor
+LEFT JOIN teaches ON instructor.ID = teaches.ID;
+
+-- Right Outer Join:
+SELECT student.ID, student.name, advisor.i_ID
+FROM advisor
+RIGHT JOIN student ON advisor.s_ID = student.ID;
+
+-- Cross Join (Cartesian Product):
+SELECT instructor.name, course.title
+FROM instructor
+CROSS JOIN course;
+
+-- Self Join:
+SELECT A.name AS emp, B.name AS manager
+FROM employee A
+JOIN employee B ON A.manager_id = B.emp_id;
+
+-- Natural Join (joins on identical column names automatically):
+SELECT * FROM instructor NATURAL JOIN department;
+
+-- Multi-table Join:
+SELECT student.name, course.title, takes.grade
+FROM student
+JOIN takes ON student.ID = takes.ID
+JOIN section ON takes.course_id = section.course_id
+             AND takes.sec_id = section.sec_id
+             AND takes.semester = section.semester
+             AND takes.year = section.year
+JOIN course ON section.course_id = course.course_id;
+
+-- Aggregate Functions:
+SELECT COUNT(*) AS total_instructors FROM instructor;
+SELECT COUNT(DISTINCT dept_name) FROM instructor;
+SELECT SUM(salary) AS total_payroll FROM instructor;
+SELECT AVG(salary) AS avg_salary FROM instructor;
+SELECT MIN(salary) AS min_salary, MAX(salary) AS max_salary FROM instructor;
+SELECT dept_name, GROUP_CONCAT(name ORDER BY name SEPARATOR ', ') AS faculty
+FROM instructor
+GROUP BY dept_name;
+
+-- GROUP BY and HAVING:
+SELECT dept_name, AVG(salary) AS avg_sal, COUNT(*) AS num_instructors
+FROM instructor
+GROUP BY dept_name
+HAVING AVG(salary) > 70000;
+
+-- Set Operations (UNION, UNION ALL):
+SELECT course_id FROM section WHERE semester = 'Fall' AND year = 2017
+UNION
+SELECT course_id FROM section WHERE semester = 'Spring' AND year = 2018;
+
+SELECT course_id FROM section WHERE semester = 'Fall' AND year = 2017
+UNION ALL
+SELECT course_id FROM section WHERE semester = 'Spring' AND year = 2018;
+
+-- Subqueries (Scalar, Correlated, IN, EXISTS):
+SELECT name, salary FROM instructor
+WHERE salary > (SELECT AVG(salary) FROM instructor);
+
+SELECT course_id FROM section
+WHERE year = 2017 AND course_id IN (SELECT course_id FROM section WHERE year = 2018);
+
+SELECT name FROM instructor i
+WHERE EXISTS (
+    SELECT 1 FROM teaches t WHERE t.ID = i.ID AND t.year = 2018
+);
+
+
+================================================================================
+10. WINDOW FUNCTIONS & COMMON TABLE EXPRESSIONS (CTEs) [MySQL 8.0+]
+================================================================================
+
+-- Common Table Expression (CTE):
+WITH dept_avg AS (
+    SELECT dept_name, AVG(salary) AS avg_salary
+    FROM instructor
+    GROUP BY dept_name
+)
+SELECT i.name, i.dept_name, i.salary, d.avg_salary
+FROM instructor i
+JOIN dept_avg d ON i.dept_name = d.dept_name
+WHERE i.salary > d.avg_salary;
+
+-- Recursive CTE (generate sequence 1 to 10):
+WITH RECURSIVE numbers AS (
+    SELECT 1 AS n
+    UNION ALL
+    SELECT n + 1 FROM numbers WHERE n < 10
+)
+SELECT n FROM numbers;
+
+-- Window Functions (ROW_NUMBER, RANK, DENSE_RANK):
+SELECT
+    ID, name, dept_name, salary,
+    ROW_NUMBER() OVER (PARTITION BY dept_name ORDER BY salary DESC) AS row_num,
+    RANK() OVER (PARTITION BY dept_name ORDER BY salary DESC) AS sal_rank,
+    DENSE_RANK() OVER (PARTITION BY dept_name ORDER BY salary DESC) AS dense_sal_rank
+FROM instructor;
+
+-- Window Functions (LEAD, LAG, Running Total):
+SELECT
+    ID, dept_name, salary,
+    LAG(salary, 1) OVER (PARTITION BY dept_name ORDER BY salary) AS prev_lower_salary,
+    LEAD(salary, 1) OVER (PARTITION BY dept_name ORDER BY salary) AS next_higher_salary,
+    SUM(salary) OVER (PARTITION BY dept_name ORDER BY salary) AS running_dept_total
+FROM instructor;
+
+
+================================================================================
+11. VIEW MANAGEMENT
+================================================================================
+
+-- Create a View:
+CREATE VIEW faculty_overview AS
+SELECT ID, name, dept_name
+FROM instructor;
+
+-- Create or Replace an existing View:
+CREATE OR REPLACE VIEW faculty_overview AS
+SELECT ID, name, dept_name, salary
+FROM instructor;
+
+-- Querying through a View:
+SELECT * FROM faculty_overview WHERE dept_name = 'Physics';
+
+-- Inspect View definition:
+SHOW CREATE VIEW faculty_overview\G
+
+-- Drop a View:
+DROP VIEW IF EXISTS faculty_overview;
+
+
+================================================================================
+12. STORED PROCEDURES AND USER-DEFINED FUNCTIONS
+================================================================================
+
+-- Stored Procedure with IN and OUT parameters:
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS GetInstructorSalary //
+CREATE PROCEDURE GetInstructorSalary (
+    IN  inst_id   VARCHAR(5),
+    OUT out_sal   NUMERIC(8, 2)
+)
+BEGIN
+    SELECT salary INTO out_sal
+    FROM instructor
+    WHERE ID = inst_id;
+END //
+
+DELIMITER ;
+
+-- Call stored procedure from terminal:
+CALL GetInstructorSalary('10101', @salary);
+SELECT @salary;
+
+-- List stored procedures:
+SHOW PROCEDURE STATUS WHERE Db = DATABASE();
+SHOW CREATE PROCEDURE GetInstructorSalary\G
+
+-- Drop a stored procedure:
+DROP PROCEDURE IF EXISTS GetInstructorSalary;
+
+-- User-Defined Function (Deterministic scalar function):
+DELIMITER //
+
+DROP FUNCTION IF EXISTS GetAnnualSalary //
+CREATE FUNCTION GetAnnualSalary (
+    monthly_sal NUMERIC(8, 2)
+)
+RETURNS NUMERIC(10, 2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE annual_sal NUMERIC(10, 2);
+    SET annual_sal = monthly_sal * 12;
+    RETURN annual_sal;
+END //
+
+DELIMITER ;
+
+-- Using the function in queries:
+SELECT name, salary, GetAnnualSalary(salary) AS annual FROM instructor;
+
+-- Drop function:
+DROP FUNCTION IF EXISTS GetAnnualSalary;
+
+
+================================================================================
+13. TRIGGER MANAGEMENT
+================================================================================
+
+-- Create audit table:
+CREATE TABLE IF NOT EXISTS salary_audit (
+    audit_id    INT AUTO_INCREMENT PRIMARY KEY,
+    inst_id     VARCHAR(5),
+    old_salary  NUMERIC(8, 2),
+    new_salary  NUMERIC(8, 2),
+    change_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create BEFORE / AFTER UPDATE Trigger:
+DELIMITER //
+
+DROP TRIGGER IF EXISTS trg_audit_salary_update //
+CREATE TRIGGER trg_audit_salary_update
+AFTER UPDATE ON instructor
+FOR EACH ROW
+BEGIN
+    IF OLD.salary <> NEW.salary THEN
+        INSERT INTO salary_audit (inst_id, old_salary, new_salary)
+        VALUES (OLD.ID, OLD.salary, NEW.salary);
+    END IF;
+END //
+
+DELIMITER ;
+
+-- Show all triggers in current database:
+SHOW TRIGGERS\G
+SHOW CREATE TRIGGER trg_audit_salary_update\G
+
+-- Drop a trigger:
+DROP TRIGGER IF EXISTS trg_audit_salary_update;
+
+
+================================================================================
+14. TRANSACTION CONTROL LANGUAGE (TCL) & LOCKING
+================================================================================
+
+-- Turn off autocommit (manual transaction management):
+SET autocommit = 0;
+
+-- Turn on autocommit (default):
+SET autocommit = 1;
+
+-- Check autocommit status:
+SELECT @@autocommit;
+
+-- Explicit Transaction Lifecycle:
+START TRANSACTION;  -- or BEGIN;
+UPDATE instructor SET salary = salary + 5000 WHERE ID = '10101';
+UPDATE instructor SET salary = salary - 5000 WHERE ID = '12121';
+COMMIT;             -- Commit changes permanently to database
+
+-- Rollback on error:
+START TRANSACTION;
+DELETE FROM student WHERE dept_name = 'Physics';
+ROLLBACK;           -- Discard all changes made in this transaction
+
+-- Using Savepoints:
+START TRANSACTION;
+UPDATE instructor SET salary = 90000 WHERE ID = '10101';
+SAVEPOINT sp1;
+UPDATE instructor SET salary = 95000 WHERE ID = '12121';
+ROLLBACK TO SAVEPOINT sp1; -- Reverts only changes after sp1
+COMMIT;
+
+-- Set Transaction Isolation Levels:
+-- (READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE)
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+SELECT @@transaction_isolation;
+
+-- Table Locking (explicit):
+LOCK TABLES instructor READ, student WRITE;
+UNLOCK TABLES;
+
+-- Row-level locking inside transaction (Pessimistic concurrency):
+SELECT * FROM instructor WHERE ID = '10101' FOR UPDATE;      -- Exclusive lock
+SELECT * FROM instructor WHERE ID = '10101' FOR SHARE;       -- Shared lock
+
+
+================================================================================
+15. USER MANAGEMENT & PRIVILEGE CONTROL (DCL)
+================================================================================
+
+-- View all database users and allowed connection hosts:
+SELECT User, Host FROM mysql.user;
+
+-- Create a new user with password:
+CREATE USER 'db_user'@'localhost' IDENTIFIED BY 'StrongPass123!';
+CREATE USER 'remote_user'@'%' IDENTIFIED BY 'StrongPass123!';
+
+-- Change user password:
+ALTER USER 'db_user'@'localhost' IDENTIFIED BY 'NewStrongPass456!';
+
+-- Rename a user:
+RENAME USER 'db_user'@'localhost' TO 'analyst'@'localhost';
+
+-- Grant specific privileges on a database to user:
+GRANT SELECT, INSERT, UPDATE ON university_db.* TO 'analyst'@'localhost';
+
+-- Grant full administrative rights on all databases:
+GRANT ALL PRIVILEGES ON *.* TO 'db_admin'@'localhost' WITH GRANT OPTION;
+
+-- Inspect grants for a user:
+SHOW GRANTS FOR 'analyst'@'localhost';
+SHOW GRANTS FOR CURRENT_USER();
+
+-- Revoke specific privilege from user:
+REVOKE INSERT, UPDATE ON university_db.* FROM 'analyst'@'localhost';
+
+-- Revoke all privileges:
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'analyst'@'localhost';
+
+-- Reload grant tables into memory immediately:
+FLUSH PRIVILEGES;
+
+-- Delete a database user account:
+DROP USER 'analyst'@'localhost';
+
+
+================================================================================
+16. DATA IMPORT, EXPORT & BACKUP / RESTORE
+================================================================================
+
+-- Inside MySQL Client: Import and execute a .sql file:
+SOURCE /home/noir/Work/Database/MySQL-database/DDL-main.sql;
+\. /home/noir/Work/Database/MySQL-database/smallRelationsInsertFile(1).sql;
+
+-- Inside MySQL Client: Fast bulk load from CSV file into a table:
+LOAD DATA LOCAL INFILE '/path/to/data.csv'
+INTO TABLE student
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(ID, name, dept_name, tot_cred);
+
+-- Inside MySQL Client: Export query output directly to a CSV file on server:
+SELECT ID, name, dept_name, salary
+FROM instructor
+INTO OUTFILE '/var/lib/mysql-files/instructors.csv'
+FIELDS TERMINATED BY ','
+ENCLOSED BY '"'
+LINES TERMINATED BY '\n';
+
+-- In Linux Shell (Bash): Backup a single database with mysqldump:
+mysqldump -u root -p university_db > university_backup.sql
+
+-- In Linux Shell (Bash): Backup schema only (no data rows):
+mysqldump -u root -p --no-data university_db > schema_only.sql
+
+-- In Linux Shell (Bash): Backup data only (no table definitions):
+mysqldump -u root -p --no-create-info university_db > data_only.sql
+
+-- In Linux Shell (Bash): Backup specific tables only:
+mysqldump -u root -p university_db instructor department > faculty_data.sql
+
+-- In Linux Shell (Bash): Backup ALL databases on the server:
+mysqldump -u root -p --all-databases > full_cluster_backup.sql
+
+-- In Linux Shell (Bash): Restore / Load a mysqldump backup file:
+mysql -u root -p university_db < university_backup.sql
+
+
+================================================================================
+17. SERVER STATUS, PERFORMANCE & DIAGNOSTICS
+================================================================================
+
+-- View active queries and client connections:
+SHOW PROCESSLIST;
+SHOW FULL PROCESSLIST;
+
+-- Kill a long-running or stuck query / thread:
+KILL QUERY <process_id>;       -- Aborts query execution only
+KILL <process_id>;             -- Terminates client connection
+
+-- Inspect runtime variables and system configuration:
+SHOW VARIABLES LIKE '%max_connections%';
+SHOW VARIABLES LIKE '%innodb_buffer_pool_size%';
+SHOW GLOBAL VARIABLES LIKE 'port';
+
+-- Set system variable at runtime (SESSION vs GLOBAL):
+SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
+SET GLOBAL max_connections = 500;
+
+-- Server operational status and metrics:
+SHOW GLOBAL STATUS LIKE 'Uptime';
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+SHOW GLOBAL STATUS LIKE 'Queries';
+
+-- Inspect supported database engines:
+SHOW ENGINES;
+
+-- View InnoDB internals, deadlocks, and transaction locks:
+SHOW ENGINE INNODB STATUS\G
+
+-- Query Execution Plan Analysis (EXPLAIN):
+EXPLAIN SELECT * FROM instructor WHERE dept_name = 'Comp. Sci.';
+EXPLAIN FORMAT=TREE SELECT * FROM instructor WHERE dept_name = 'Comp. Sci.';
+EXPLAIN ANALYZE SELECT * FROM instructor WHERE dept_name = 'Comp. Sci.';
+
+-- Table Maintenance, Integrity Checking & Optimization:
+ANALYZE TABLE instructor;      -- Updates key distribution statistics
+CHECK TABLE instructor;        -- Checks table integrity for errors
+OPTIMIZE TABLE instructor;     -- Reclaims unused storage and defragments data
+REPAIR TABLE instructor;       -- Repairs corrupt MyISAM / ARCHIVE tables
+
+-- View errors and warnings from the previous statement:
+SHOW ERRORS;
+SHOW COUNT(*) ERRORS;
+SHOW WARNINGS;
+SHOW COUNT(*) WARNINGS;
+
+-- Flush internal caches and logs:
+FLUSH TABLES;
+FLUSH LOGS;
+FLUSH STATUS;
+
+
+================================================================================
+18. KEY BUILT-IN FUNCTIONS CHEATSHEET
+================================================================================
+
+[ String Functions ]
+CONCAT(str1, str2, ...)        -- Concatenate strings: CONCAT(name, ' (', dept_name, ')')
+CONCAT_WS(sep, str1, str2)     -- Concatenate with separator: CONCAT_WS('-', '2026', '09', '20')
+LENGTH(str)                    -- Byte length of string
+CHAR_LENGTH(str)               -- Character count of string
+LOWER(str) / LCASE(str)        -- Convert to lowercase
+UPPER(str) / UCASE(str)        -- Convert to uppercase
+TRIM(str)                      -- Remove leading and trailing whitespace
+LTRIM(str) / RTRIM(str)        -- Strip left / right spaces
+SUBSTRING(str, pos, len)       -- Substring (1-indexed): SUBSTRING('Database', 1, 4) -> 'Data'
+REPLACE(str, from_str, to_str) -- Search and replace in string
+LEFT(str, n) / RIGHT(str, n)   -- Extract n characters from left or right
+LPAD(str, len, pad)            -- Left pad string to fixed length
+INSTR(str, substr)             -- 1-based index position of substring
+
+[ Numeric Functions ]
+ROUND(n, d)                    -- Round n to d decimal places: ROUND(123.456, 2) -> 123.46
+TRUNCATE(n, d)                 -- Truncate n to d decimal places: TRUNCATE(123.456, 2) -> 123.45
+CEIL(n) / CEILING(n)           -- Smallest integer >= n: CEIL(4.2) -> 5
+FLOOR(n)                       -- Largest integer <= n: FLOOR(4.9) -> 4
+ABS(n)                         -- Absolute value
+MOD(n, m)                      -- Modulo remainder: MOD(10, 3) -> 1
+POWER(n, p)                    -- n raised to power p
+SQRT(n)                        -- Square root of non-negative number
+RAND()                         -- Generate random float between 0.0 and 1.0
+
+[ Date & Time Functions ]
+NOW()                          -- Current timestamp: '2026-09-20 09:12:00'
+CURDATE()                      -- Current date: '2026-09-20'
+CURTIME()                      -- Current time: '09:12:00'
+DATE_ADD(date, INTERVAL 7 DAY) -- Add time interval
+DATE_SUB(date, INTERVAL 1 MONTH) -- Subtract time interval
+DATEDIFF(date1, date2)         -- Days between two dates
+TIMESTAMPDIFF(YEAR, dob, NOW()) -- Difference in specified unit (YEAR, MONTH, HOUR)
+DATE_FORMAT(date, '%Y-%m-%d')  -- Format date to string: DATE_FORMAT(NOW(), '%W, %M %e, %Y')
+STR_TO_DATE(str, format)       -- Parse string to date: STR_TO_DATE('20/09/2026', '%d/%m/%Y')
+YEAR(date) / MONTH(date) / DAY(date) / HOUR(time) / MINUTE(time)
+
+[ Control Flow & Conditional Functions ]
+IF(condition, true_val, false_val)
+    Example: IF(salary >= 70000, 'High', 'Standard')
+
+IFNULL(val, default_val)
+    Example: IFNULL(budget, 0.00)
+
+COALESCE(val1, val2, ..., valN)
+    Returns first non-NULL expression.
+    Example: COALESCE(phone_mobile, phone_home, 'No Phone')
+
+NULLIF(expr1, expr2)
+    Returns NULL if expr1 = expr2, else expr1.
+
+CASE WHEN ... THEN ... ELSE ... END
+    Example:
+    SELECT name, salary,
+           CASE
+               WHEN salary >= 80000 THEN 'Tier 1'
+               WHEN salary >= 60000 THEN 'Tier 2'
+               ELSE 'Tier 3'
+           END AS salary_tier
+    FROM instructor;
+
+[ System & Information Functions ]
+DATABASE()                     -- Active database name
+USER() / CURRENT_USER()        -- Connected user and host
+VERSION()                      -- MySQL server release version
+LAST_INSERT_ID()               -- Auto-generated ID from last INSERT
+ROW_COUNT()                    -- Number of rows updated/deleted/inserted by last query
+FOUND_ROWS()                   -- Number of rows returned by last query
+
+
+================================================================================
+19. ESSENTIAL TIPS & KEYBOARD SHORTCUTS IN MYSQL TERMINAL
+================================================================================
+
+* Semicolon vs \G:
+  - End query with ';' for traditional table grid layout.
+  - End query with '\G' for vertical record-by-record display (essential for wide tables).
+
+* Canceling a command:
+  - If you started typing a query and changed your mind, DO NOT press Ctrl+C if you want
+    to keep your connection alive; type '\c' and press Enter to clear the query buffer.
+
+* Terminal Navigation Shortcuts (GNU Readline):
+  - Ctrl + A  : Move cursor to beginning of the line.
+  - Ctrl + E  : Move cursor to end of the line.
+  - Ctrl + U  : Cut from cursor position to beginning of the line.
+  - Ctrl + K  : Cut from cursor position to end of the line.
+  - Ctrl + W  : Erase previous word.
+  - Ctrl + L  : Clear terminal screen (same as shell clear).
+  - Ctrl + R  : Reverse incremental search through command history.
+  - Up / Down : Scroll through previously executed SQL statements.
+
+* Tab Completion:
+  - MySQL CLI has built-in auto-completion for SQL keywords, table names, and column
+    names. Press Tab once or twice to auto-complete.
+  - If new tables were just created, type '\#' to rehash auto-completion cache.
+
+* Session Logging:
+  - Run `tee /path/to/log.txt;` at the start of your lab session to automatically
+    save all queries, tables, and errors into a clean report file for submission.
+
+================================================================================
+END OF REFERENCE GUIDE
+================================================================================
